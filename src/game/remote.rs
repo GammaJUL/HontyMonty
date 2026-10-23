@@ -5,6 +5,7 @@ use bevy::prelude::*;
 
 use super::player::PlayerCamera;
 use super::{GameSet, InGameEntity};
+use crate::audio::{PlaySfx, Sound};
 use crate::character::spawn_character;
 use crate::game_mode::Team;
 use crate::net::protocol::PlayerId;
@@ -28,6 +29,8 @@ pub struct RemotePlayer {
     held: Option<(Option<WeaponId>, Option<GrenadeKind>)>,
     held_entity: Option<Entity>,
     death_anim: f32,
+    moving: bool,
+    step_timer: f32,
 }
 
 #[derive(Component)]
@@ -35,7 +38,7 @@ struct NameTag(PlayerId);
 
 pub fn plugin(app: &mut App) {
     app.add_systems(Update, sync_remote.in_set(GameSet::Simulate))
-        .add_systems(Update, (interpolate, name_tags).in_set(GameSet::Present));
+        .add_systems(Update, (interpolate, name_tags, footsteps).in_set(GameSet::Present));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -90,6 +93,8 @@ fn sync_remote(
                             held: None,
                             held_entity: None,
                             death_anim: 0.0,
+                            moving: false,
+                            step_timer: 0.0,
                         },
                         Transform::from_translation(Vec3::from(np.pos)),
                         Visibility::default(),
@@ -116,6 +121,7 @@ fn sync_remote(
         rp.target_yaw = np.yaw;
         rp.alive = np.alive;
         rp.crouch = np.crouch;
+        rp.moving = np.moving && np.alive;
         if respawned {
             t.translation = rp.target_pos;
             rp.death_anim = 0.0;
@@ -201,6 +207,7 @@ fn name_tags(
     cams: Query<(&Camera, &GlobalTransform), With<PlayerCamera>>,
     players: Query<(&RemotePlayer, &Transform)>,
     mut tags: Query<(&NameTag, &mut Node, &mut Visibility)>,
+    smokes: Res<super::effects::ActiveSmokes>,
 ) {
     let Ok((cam, cam_t)) = cams.single() else { return };
     let alive = |id: PlayerId| {
@@ -211,7 +218,10 @@ fn name_tags(
     };
     for (tag, mut node, mut vis) in &mut tags {
         let pos = players.iter().find(|(rp, _)| rp.id == tag.0).map(|(_, t)| t.translation);
-        let screen = pos.and_then(|p| cam.world_to_viewport(cam_t, p + Vec3::Y * 2.05).ok());
+        let eye = cam_t.translation();
+        // Hidden behind the camera or behind a smoke.
+        let visible = pos.filter(|p| (*p - eye).dot(*cam_t.forward()) > 0.0 && !smokes.blocks(eye, *p + Vec3::Y * 1.6));
+        let screen = visible.and_then(|p| cam.world_to_viewport(cam_t, p + Vec3::Y * 2.05).ok());
         match screen {
             Some(s) if alive(tag.0) => {
                 node.left = Val::Px(s.x - 30.0);
@@ -219,6 +229,32 @@ fn name_tags(
                 *vis = Visibility::Inherited;
             }
             _ => *vis = Visibility::Hidden,
+        }
+    }
+}
+
+/// Running players make footstep noise; louder the closer they are.
+fn footsteps(
+    time: Res<Time>,
+    cams: Query<&GlobalTransform, With<PlayerCamera>>,
+    mut q: Query<(&mut RemotePlayer, &Transform)>,
+    mut sfx: MessageWriter<PlaySfx>,
+) {
+    let Ok(cam) = cams.single() else { return };
+    let ear = cam.translation();
+    for (mut rp, t) in &mut q {
+        if !rp.moving {
+            rp.step_timer = 0.1;
+            continue;
+        }
+        rp.step_timer -= time.delta_secs();
+        if rp.step_timer > 0.0 {
+            continue;
+        }
+        rp.step_timer = 0.36;
+        let volume = (1.0 - t.translation.distance(ear) / 25.0).clamp(0.0, 1.0) * 0.6;
+        if volume > 0.02 {
+            sfx.write(PlaySfx::fx(Sound::Footstep, volume));
         }
     }
 }

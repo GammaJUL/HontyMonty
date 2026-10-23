@@ -45,6 +45,8 @@ struct ServerPlayer {
     spawn_pos: Vec3,
     spawn_yaw: f32,
     respawn_at: Option<f32>,
+    /// Server time of the last client update (for the ping echo).
+    received_at: f32,
 }
 
 impl ServerPlayer {
@@ -254,11 +256,12 @@ impl GameServer {
                 let now = self.time;
                 let p = &mut self.players[i];
                 p.last_seen = now;
-                if p.alive {
-                    p.state = state;
-                } else {
-                    p.state.yaw = state.yaw;
-                    p.state.pitch = state.pitch;
+                p.received_at = now;
+                // Dead players keep their death position but still report aim, ping and clock.
+                let keep = p.state.pos;
+                p.state = state;
+                if !p.alive {
+                    p.state.pos = keep;
                 }
                 let id = p.id;
                 let last = p.last_cmd;
@@ -349,6 +352,7 @@ impl GameServer {
             spawn_pos: Vec3::ZERO,
             spawn_yaw: 0.0,
             respawn_at: None,
+            received_at: self.time,
         };
         p.reset_loadout();
         if self.mode.is_ffa() && self.phase == Phase::Live {
@@ -433,11 +437,14 @@ impl GameServer {
                 spawn_pos: p.spawn_pos.to_array(),
                 spawn_yaw: p.spawn_yaw,
                 is_host: Some(p.id) == self.host_id,
+                ping: p.state.ping_ms,
             })
             .collect();
         let mut snap = Snapshot {
             your_id: 0,
             ack_cmd: 0,
+            echo_time: 0.0,
+            echo_age: 0.0,
             lobby: self.lobby_info(),
             phase: self.phase,
             phase_time_left: self.phase_timer.max(0.0),
@@ -451,6 +458,8 @@ impl GameServer {
         for p in &self.players {
             snap.your_id = p.id;
             snap.ack_cmd = p.last_cmd;
+            snap.echo_time = p.state.sent_at;
+            snap.echo_age = self.time - p.received_at;
             let bytes = encode(&S2C::Snapshot(Box::new(snap.clone())));
             let _ = self.socket.send_to(&bytes, p.addr);
         }
@@ -503,7 +512,8 @@ impl GameServer {
                 weapon,
                 origin,
                 dirs,
-            } => self.fire(i, weapon, Vec3::from(origin), dirs),
+                heavy,
+            } => self.fire(i, weapon, Vec3::from(origin), dirs, heavy),
             Cmd::Throw { kind, origin, vel } => {
                 let p = &mut self.players[i];
                 if !p.alive || !matches!(self.phase, Phase::Live | Phase::RoundEnd) {
@@ -532,10 +542,17 @@ impl GameServer {
                     vel,
                 });
             }
+            Cmd::Chat(text) | Cmd::TeamChat(text) if text.trim().is_empty() => {}
             Cmd::Chat(text) => {
                 let text: String = text.chars().take(120).collect();
                 let from = self.players[i].name.clone();
-                self.event(GameEvent::Chat { from, text });
+                self.event(GameEvent::Chat { from, text, team: None });
+            }
+            Cmd::TeamChat(text) => {
+                let text: String = text.chars().take(120).collect();
+                let from = self.players[i].name.clone();
+                let team = Some(self.players[i].team);
+                self.event(GameEvent::Chat { from, text, team });
             }
         }
     }
@@ -616,7 +633,7 @@ impl GameServer {
         a != b && (self.mode.is_ffa() || self.players[a].team != self.players[b].team)
     }
 
-    fn fire(&mut self, i: usize, weapon: WeaponId, origin: Vec3, dirs: Vec<V3>) {
+    fn fire(&mut self, i: usize, weapon: WeaponId, origin: Vec3, dirs: Vec<V3>, heavy: bool) {
         let p = &self.players[i];
         if !p.alive || !p.owns(weapon) || !matches!(self.phase, Phase::Live | Phase::RoundEnd) {
             return;
@@ -633,7 +650,8 @@ impl GameServer {
             if dir == Vec3::ZERO {
                 continue;
             }
-            let wall = raycast_map(origin, dir, def.range).unwrap_or(def.range);
+            let range = if weapon == WeaponId::Knife { knife_range(heavy) } else { def.range };
+            let wall = raycast_map(origin, dir, range).unwrap_or(range);
             let mut best: Option<(f32, usize, HitGroup)> = None;
             for (j, v) in self.players.iter().enumerate() {
                 if !v.alive || !self.enemies(i, j) {
@@ -657,8 +675,17 @@ impl GameServer {
             }
             if let Some((t, j, g)) = best {
                 let v = &self.players[j];
-                let (hp, ar) = compute_damage(def, t, g, v.armor, v.helmet);
-                hits.push((j, hp, ar, g == HitGroup::Head));
+                if weapon == WeaponId::Knife {
+                    // Backstab: the victim faces the same way as the swing.
+                    let facing = Vec3::new(-v.state.yaw.sin(), 0.0, -v.state.yaw.cos());
+                    let flat = Vec3::new(dir.x, 0.0, dir.z).normalize_or_zero();
+                    let dmg = knife_damage(heavy, facing.dot(flat) > 0.4);
+                    let (hp, ar) = apply_armor(dmg, def.armor_pen, v.armor, v.armor > 0);
+                    hits.push((j, hp, ar, false));
+                } else {
+                    let (hp, ar) = compute_damage(def, t, g, v.armor, v.helmet);
+                    hits.push((j, hp, ar, g == HitGroup::Head));
+                }
             }
         }
         // Merge pellets so shotguns produce one hit event per victim.

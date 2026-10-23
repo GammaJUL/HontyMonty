@@ -1,6 +1,7 @@
 //! In-match gameplay: world, local player, weapons, remote players, effects and HUD.
 
 pub mod buy_menu;
+pub mod chat;
 pub mod combat;
 pub mod effects;
 pub mod hud;
@@ -20,10 +21,17 @@ use crate::ui::settings_menu::SettingsOpen;
 pub struct GameUi {
     pub buy_open: bool,
     pub pause_open: bool,
+    pub chat_open: bool,
 }
 
 impl GameUi {
+    /// True when gameplay input (moving, shooting, looking) should be ignored.
     pub fn any_open(&self, settings: &SettingsOpen) -> bool {
+        self.chat_open || self.cursor_free(settings)
+    }
+
+    /// Menus that need the mouse cursor (typing in chat keeps it locked).
+    pub fn cursor_free(&self, settings: &SettingsOpen) -> bool {
         self.buy_open || self.pause_open || settings.0
     }
 }
@@ -65,6 +73,7 @@ impl Plugin for GamePlugin {
                 effects::plugin,
                 hud::plugin,
                 buy_menu::plugin,
+                chat::plugin,
                 pause::plugin,
             ));
     }
@@ -137,7 +146,7 @@ fn grab_cursor(
     mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>,
     window: Single<&Window, With<PrimaryWindow>>,
 ) {
-    let free = ui.any_open(&settings) || !window.focused;
+    let free = ui.cursor_free(&settings) || !window.focused;
     let (grab, visible) = if free {
         (CursorGrabMode::None, true)
     } else {

@@ -6,7 +6,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 use super::combat::{Arsenal, Held};
-use super::effects::ScreenEffects;
+use super::effects::{ActiveSmokes, ScreenEffects};
 use super::player::LocalPlayer;
 use super::{GameSet, GameUi, InGameEntity};
 use crate::game_mode::{Phase, Team, FFA_KILL_LIMIT};
@@ -19,10 +19,15 @@ use crate::ui::spawn_crosshair_lines;
 use crate::ui::widgets::*;
 use crate::weapons::{ScopeStyle, WeaponId};
 
+const MAX_CHAT_LINES: usize = 8;
+const CHAT_LINE_SECS: f32 = 12.0;
+
 #[derive(Resource, Default)]
 pub struct HudFeed {
     kills: Vec<(String, f32, bool)>,
     infos: Vec<(String, f32)>,
+    /// (line, time received)
+    chat: Vec<(String, f32)>,
     center: Option<(String, f32)>,
     pub killed_by: Option<String>,
     now: f32,
@@ -41,6 +46,13 @@ impl HudFeed {
             self.infos.remove(0);
         }
     }
+    pub fn chat(&mut self, text: String) {
+        self.chat.push((text, self.now));
+        if self.chat.len() > MAX_CHAT_LINES {
+            self.chat.remove(0);
+        }
+    }
+
     pub fn center(&mut self, text: String, secs: f32) {
         self.center = Some((text, self.now + secs));
     }
@@ -55,6 +67,7 @@ struct ScopeImages {
 #[derive(Component)]
 enum HudText {
     Top,
+    Chat,
     Vitals,
     Money,
     Ammo,
@@ -76,6 +89,8 @@ struct HitMarker;
 enum Overlay {
     Flash,
     Damage,
+    /// Gray fog while the camera is inside a smoke.
+    Smoke,
 }
 
 #[derive(Component)]
@@ -183,6 +198,16 @@ fn spawn_hud(mut commands: Commands, scopes: Res<ScopeImages>, mut feed: ResMut<
                 });
             }
             root.spawn((
+                Overlay::Smoke,
+                Node {
+                    width: percent(100),
+                    height: percent(100),
+                    position_type: PositionType::Absolute,
+                    ..default()
+                },
+                BackgroundColor(Color::NONE),
+            ));
+            root.spawn((
                 Overlay::Damage,
                 Node {
                     width: percent(100),
@@ -240,6 +265,7 @@ fn spawn_hud(mut commands: Commands, scopes: Res<ScopeImages>, mut feed: ResMut<
                 .insert(TextColor(TEXT_DIM));
             root.spawn(text(HudText::KillFeed, 16.0, abs(Val::Auto, px(28), px(12), Val::Auto)))
                 .insert(TextLayout::justify(Justify::Right));
+            root.spawn(text(HudText::Chat, 16.0, abs(px(16), Val::Auto, Val::Auto, px(140))));
             root.spawn(text(HudText::Info, 15.0, abs(px(16), percent(40), Val::Auto, Val::Auto)))
                 .insert(TextColor(TEXT_DIM));
             root.spawn((
@@ -283,6 +309,8 @@ fn update_texts(
     arsenal: Res<Arsenal>,
     mut feed: ResMut<HudFeed>,
     controls: Controls,
+    spectate: Res<super::player::Spectate>,
+    ui: Res<GameUi>,
     mut q: Query<(&HudText, &mut Text)>,
 ) {
     feed.now = time.elapsed_secs();
@@ -356,13 +384,30 @@ fn update_texts(
                 .map(|(s, _, hl)| if *hl { format!("> {s} <") } else { s.clone() })
                 .collect::<Vec<_>>()
                 .join("\n"),
+            HudText::Chat => {
+                // Recent lines fade out after a while; all of them show while typing.
+                let max_age = if ui.chat_open { f32::INFINITY } else { CHAT_LINE_SECS };
+                feed.chat
+                    .iter()
+                    .filter(|(_, at)| now - at < max_age)
+                    .map(|(s, _)| s.clone())
+                    .collect::<Vec<_>>()
+                    .join("
+")
+            }
             HudText::Info => feed.infos.iter().map(|(s, _)| s.clone()).collect::<Vec<_>>().join("\n"),
             HudText::Center => feed.center.as_ref().map(|c| c.0.clone()).unwrap_or_default(),
             HudText::Bottom => {
                 if !me.alive && snap.phase != Phase::Lobby {
                     let reason = feed.killed_by.clone().unwrap_or_else(|| "You are dead".into());
                     let wait = if ffa { "Respawning soon..." } else { "Waiting for the next round..." };
-                    format!("{reason}\n{wait}")
+                    match spectate.target.and_then(|id| c.player(id)) {
+                        Some(t) => format!(
+                            "{reason}\n{wait}\nSpectating {} ({} HP)  -  click to switch",
+                            t.name, t.health
+                        ),
+                        None => format!("{reason}\n{wait}"),
+                    }
                 } else if snap.buy_time_left > 0.0 && snap.buy_time_left < 9000.0 {
                     format!("Press {buy_key} to buy  |  {:.0}s", snap.buy_time_left)
                 } else if ffa {
@@ -425,8 +470,11 @@ fn update_overlays(
     arsenal: Res<Arsenal>,
     mut overlays: Query<(&Overlay, &mut BackgroundColor)>,
     mut scopes: Query<(&ScopeOverlay, &mut Visibility)>,
+    smokes: Res<ActiveSmokes>,
+    cams: Query<&GlobalTransform, With<super::player::PlayerCamera>>,
     mut hit: Query<&mut TextColor, With<HitMarker>>,
 ) {
+    let smoke = cams.single().map(|c| smokes.density_at(c.translation())).unwrap_or(0.0);
     for (o, mut bg) in &mut overlays {
         bg.0 = match o {
             Overlay::Flash => {
@@ -440,6 +488,7 @@ fn update_overlays(
                 Color::srgba(1.0, 1.0, 1.0, a)
             }
             Overlay::Damage => Color::srgba(0.8, 0.0, 0.0, fx.damage * 0.35),
+            Overlay::Smoke => Color::srgba(0.66, 0.66, 0.68, smoke * 0.97),
         };
     }
     let style = arsenal.weapon().map(|w| w.def().scope).unwrap_or(ScopeStyle::None);
@@ -510,7 +559,7 @@ fn scoreboard(
             label(b, name, 18.0, color);
             label(
                 b,
-                format!("{:<22}{:>6}{:>6}{:>7}{:>7}{:>9}", "Name", "K", "D", "HS%", "ADR", "Money"),
+                format!("{:<22}{:>6}{:>6}{:>7}{:>7}{:>9}{:>7}", "Name", "K", "D", "HS%", "ADR", "Money", "Ping"),
                 15.0,
                 TEXT_DIM,
             );
@@ -524,13 +573,14 @@ fn scoreboard(
                     name = format!("[dead] {name}");
                 }
                 let line = format!(
-                    "{:<22}{:>6}{:>6}{:>6}%{:>7.0}{:>9}",
+                    "{:<22}{:>6}{:>6}{:>6}%{:>7.0}{:>9}{:>7}",
                     name,
                     p.kills,
                     p.deaths,
                     hs,
                     p.damage as f32 / rounds,
-                    money
+                    money,
+                    p.ping
                 );
                 let color = if Some(p.id) == c.my_id { ACCENT } else { TEXT };
                 label(b, line, 15.0, color);

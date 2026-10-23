@@ -29,7 +29,9 @@ fn escape(keys: Res<ButtonInput<KeyCode>>, mut ui: ResMut<GameUi>, mut open: Res
     if !keys.just_pressed(KeyCode::Escape) {
         return;
     }
-    if open.0 {
+    if ui.chat_open {
+        ui.chat_open = false;
+    } else if open.0 {
         open.0 = false;
     } else if ui.buy_open {
         ui.buy_open = false;

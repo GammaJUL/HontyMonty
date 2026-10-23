@@ -7,12 +7,13 @@ use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 
 use super::combat::Arsenal;
+use super::remote::RemotePlayer;
 use super::{GameSet, GameUi, InGameEntity};
 use crate::audio::{PlaySfx, Sound};
 use crate::game_mode::Phase;
 use crate::keybinds::{Action, Controls};
 use crate::map::{self, collides, CROUCH_EYE, CROUCH_HEIGHT, STAND_EYE, STAND_HEIGHT};
-use crate::net::protocol::ClientState;
+use crate::net::protocol::{ClientState, PlayerId};
 use crate::net::NetClient;
 use crate::settings::Settings;
 use crate::states::AppState;
@@ -47,11 +48,21 @@ impl LocalPlayer {
 #[derive(Component)]
 pub struct PlayerCamera;
 
+/// Who the camera follows while we are dead.
+#[derive(Resource, Default)]
+pub struct Spectate {
+    pub target: Option<PlayerId>,
+}
+
+const DEATH_CAM_TIME: f32 = 2.0;
+const SPECTATE_DISTANCE: f32 = 3.0;
+
 pub fn plugin(app: &mut App) {
-    app.add_systems(OnEnter(AppState::InGame), spawn_local_player)
+    app.init_resource::<Spectate>()
+        .add_systems(OnEnter(AppState::InGame), (spawn_local_player, |mut s: ResMut<Spectate>| s.target = None))
         .add_systems(
             Update,
-            (handle_spawns, look, movement, update_camera, write_net_state)
+            (handle_spawns, choose_spectate_target, look, movement, update_camera, write_net_state)
                 .chain()
                 .in_set(GameSet::Input),
         );
@@ -264,14 +275,33 @@ fn movement(
 
 fn update_camera(
     time: Res<Time>,
-    players: Query<(&LocalPlayer, &mut Transform), Without<PlayerCamera>>,
+    players: Query<(&LocalPlayer, &mut Transform), (Without<PlayerCamera>, Without<RemotePlayer>)>,
     mut cams: Query<&mut Transform, With<PlayerCamera>>,
+    remotes: Query<(&RemotePlayer, &Transform), Without<PlayerCamera>>,
+    spectate: Res<Spectate>,
     arsenal: Res<Arsenal>,
     effects: Res<super::effects::ScreenEffects>,
 ) {
     for (p, mut t) in players {
         t.rotation = Quat::from_rotation_y(p.yaw);
         let Ok(mut cam) = cams.single_mut() else { continue };
+        let followed = spectate
+            .target
+            .and_then(|id| remotes.iter().find(|(rp, _)| rp.id == id))
+            .map(|(_, rt)| rt.translation);
+        if let (false, Some(target)) = (p.alive, followed) {
+            // Third-person orbit around the spectated player, pulled in front of walls.
+            t.translation = target;
+            let pivot = target + Vec3::Y * 1.7;
+            let back = Quat::from_euler(EulerRot::YXZ, p.yaw, p.pitch, 0.0) * Vec3::Z;
+            let dist = map::raycast_map(pivot, back, SPECTATE_DISTANCE)
+                .map(|d| (d - 0.2).max(0.3))
+                .unwrap_or(SPECTATE_DISTANCE);
+            let pitch_rot = Quat::from_rotation_x(p.pitch);
+            cam.translation = Vec3::Y * 1.7 + pitch_rot * Vec3::Z * dist;
+            cam.rotation = pitch_rot;
+            continue;
+        }
         let mut eye = STAND_EYE + (CROUCH_EYE - STAND_EYE) * p.crouch_amount;
         // Crouching while airborne moves the feet up, keep the eye where the head is.
         if p.crouch && !p.on_ground {
@@ -311,6 +341,56 @@ fn write_net_state(
         crouch: p.crouch,
         weapon,
         grenade,
-        moving: Vec2::new(p.vel.x, p.vel.z).length() > 0.5,
+        // Only running makes noise; walking (shift) and crouching are silent like in CS.
+        moving: p.on_ground && !p.crouch && Vec2::new(p.vel.x, p.vel.z).length() > 3.4,
+        ..default()
     };
+}
+
+/// Picks a living player to watch after the death cam; Fire / Scope cycle through them.
+fn choose_spectate_target(
+    time: Res<Time>,
+    client: Option<Res<NetClient>>,
+    controls: Controls,
+    ui: Res<GameUi>,
+    open: Res<SettingsOpen>,
+    players: Query<&LocalPlayer>,
+    mut spectate: ResMut<Spectate>,
+) {
+    let Ok(p) = players.single() else { return };
+    let Some(c) = client else { return };
+    let (Some(snap), Some(me)) = (c.snapshot.as_ref(), c.me()) else { return };
+    if p.alive || time.elapsed_secs() - p.death_time < DEATH_CAM_TIME {
+        spectate.target = None;
+        return;
+    }
+    let alive_others = || snap.players.iter().filter(|o| o.alive && o.id != me.id);
+    // Teammates first (like CS); anyone in free-for-all or once the team is wiped.
+    let mut candidates: Vec<PlayerId> = alive_others()
+        .filter(|o| snap.lobby.mode.is_ffa() || o.team == me.team)
+        .map(|o| o.id)
+        .collect();
+    if candidates.is_empty() {
+        candidates = alive_others().map(|o| o.id).collect();
+    }
+    if candidates.is_empty() {
+        spectate.target = None;
+        return;
+    }
+    let current = spectate.target.and_then(|t| candidates.iter().position(|id| *id == t));
+    let step = if ui.any_open(&open) {
+        0
+    } else if controls.just_pressed(Action::Fire) {
+        1
+    } else if controls.just_pressed(Action::Scope) {
+        -1
+    } else {
+        0
+    };
+    let n = candidates.len() as i32;
+    let index = match current {
+        Some(i) => (i as i32 + step).rem_euclid(n),
+        None => 0,
+    };
+    spectate.target = Some(candidates[index as usize]);
 }

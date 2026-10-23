@@ -40,6 +40,8 @@ pub struct NetClient {
     send_timer: f32,
     /// Written by gameplay every frame, sent at 60 Hz.
     pub local: ClientState,
+    /// Smoothed round-trip time in milliseconds.
+    pub ping_ms: f32,
 }
 
 impl NetClient {
@@ -62,6 +64,7 @@ impl NetClient {
             since_recv: 0.0,
             send_timer: 0.0,
             local: ClientState::default(),
+            ping_ms: 0.0,
         })
     }
 
@@ -127,6 +130,10 @@ pub fn client_receive(client: Option<ResMut<NetClient>>, time: Res<Time<Real>>, 
                     c.my_id = Some(snap.your_id);
                     c.status = ConnStatus::Connected;
                 }
+                if snap.echo_time > 0.0 {
+                    let rtt = ((c.age - snap.echo_time - snap.echo_age) * 1000.0).max(0.0);
+                    c.ping_ms = if c.ping_ms == 0.0 { rtt } else { c.ping_ms * 0.9 + rtt * 0.1 };
+                }
                 let ack = snap.ack_cmd;
                 c.pending.retain(|(seq, _)| *seq > ack);
                 let mut newest = c.last_event;
@@ -171,6 +178,8 @@ pub fn client_send(client: Option<ResMut<NetClient>>, time: Res<Time<Real>>) {
             c.send_timer -= dt;
             if c.send_timer <= 0.0 {
                 c.send_timer = SEND_INTERVAL;
+                c.local.sent_at = c.age;
+                c.local.ping_ms = c.ping_ms.round().min(9999.0) as u16;
                 let msg = C2S::Update {
                     state: c.local.clone(),
                     cmds: c.pending.iter().take(64).cloned().collect(),

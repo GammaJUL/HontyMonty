@@ -14,7 +14,7 @@ use crate::game_mode::{GameMode, Phase, Team};
 use crate::profile::{Appearance, EquippedSkin};
 use crate::weapons::{DamageSource, GrenadeKind, ShopItem, WeaponId};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const DEFAULT_PORT: u16 = 27015;
 /// Ports scanned by the lobby browser.
 pub const PORT_RANGE: std::ops::Range<u16> = 27015..27020;
@@ -49,6 +49,9 @@ pub enum Cmd {
         weapon: WeaponId,
         origin: V3,
         dirs: Vec<V3>,
+        /// Knife right-click stab.
+        #[serde(default)]
+        heavy: bool,
     },
     Throw {
         kind: GrenadeKind,
@@ -56,6 +59,8 @@ pub enum Cmd {
         vel: V3,
     },
     Chat(String),
+    /// Only shown to the sender's team.
+    TeamChat(String),
 }
 
 /// Unreliable per-tick client state.
@@ -67,7 +72,13 @@ pub struct ClientState {
     pub crouch: bool,
     pub weapon: Option<WeaponId>,
     pub grenade: Option<GrenadeKind>,
+    /// Running (audible footsteps). Walking and crouching are silent.
     pub moving: bool,
+    /// Client clock when this packet was sent, echoed back for ping.
+    #[serde(default)]
+    pub sent_at: f32,
+    #[serde(default)]
+    pub ping_ms: u16,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -152,6 +163,9 @@ pub enum GameEvent {
     Chat {
         from: String,
         text: String,
+        /// `Some` for team-only messages.
+        #[serde(default)]
+        team: Option<Team>,
     },
     Info(String),
 }
@@ -185,6 +199,8 @@ pub struct NetPlayer {
     pub spawn_pos: V3,
     pub spawn_yaw: f32,
     pub is_host: bool,
+    #[serde(default)]
+    pub ping: u16,
 }
 
 /// Cosmetics, sent less often than the rest.
@@ -199,6 +215,11 @@ pub struct NetProfile {
 pub struct Snapshot {
     pub your_id: PlayerId,
     pub ack_cmd: u32,
+    /// Latest `ClientState::sent_at` from the recipient and how long the server held it.
+    #[serde(default)]
+    pub echo_time: f32,
+    #[serde(default)]
+    pub echo_age: f32,
     pub lobby: LobbyInfo,
     pub phase: Phase,
     pub phase_time_left: f32,

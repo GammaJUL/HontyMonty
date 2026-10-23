@@ -147,6 +147,7 @@ fn headshot_kills_and_pays_out() {
         weapon: WeaponId::Glock,
         origin: [-5.0, 1.65, -8.0],
         dirs: vec![[1.0, 0.0, 0.0]],
+        heavy: false,
     });
     run(&mut server, &mut [&mut a, &mut b], 0.2);
 
@@ -176,8 +177,56 @@ fn shots_do_not_go_through_walls() {
         weapon: WeaponId::Glock,
         origin: [-6.0, 1.65, 0.0],
         dirs: vec![[1.0, 0.0, 0.0]],
+        heavy: false,
     });
     run(&mut server, &mut [&mut a, &mut b], 0.2);
     assert!(b.me().alive);
     assert_eq!(b.me().health, 100);
+}
+
+#[test]
+fn knife_range_and_backstab() {
+    let (mut server, mut a, mut b) = setup(27230, "");
+    a.cmd(Cmd::StartMatch);
+    run(&mut server, &mut [&mut a, &mut b], FREEZE_TIME + 0.4);
+    // Bob faces -Z (yaw 0).
+    b.state.pos = [10.0, 0.0, -9.0];
+    b.state.yaw = 0.0;
+    let stab = |a: &mut TestClient, z: f32, dir: f32| {
+        a.state.pos = [10.0, 0.0, z];
+        a.cmd(Cmd::Fire {
+            weapon: WeaponId::Knife,
+            origin: [10.0, 1.65, z],
+            dirs: vec![[0.0, 0.0, dir]],
+            heavy: false,
+        });
+    };
+
+    // Too far away: no damage.
+    stab(&mut a, -6.0, -1.0);
+    run(&mut server, &mut [&mut a, &mut b], 0.2);
+    assert_eq!(b.me().health, 100);
+
+    // From behind: backstab for 90.
+    stab(&mut a, -8.0, -1.0);
+    run(&mut server, &mut [&mut a, &mut b], 0.2);
+    assert_eq!(b.me().health, 10);
+
+    // From the front: a normal 40 slash finishes him.
+    stab(&mut a, -10.0, 1.0);
+    run(&mut server, &mut [&mut a, &mut b], 0.2);
+    assert!(!b.me().alive);
+    assert_eq!(a.me().money, 800 + 1500 + 3250, "knife kill reward + round win");
+}
+
+#[test]
+fn team_chat_is_tagged_with_team() {
+    let (mut server, mut a, mut b) = setup(27240, "");
+    a.cmd(Cmd::TeamChat("rush B".into()));
+    run(&mut server, &mut [&mut a, &mut b], 0.2);
+    let events = &b.snapshot.as_ref().unwrap().events;
+    assert!(events.iter().any(|(_, e)| matches!(
+        e,
+        GameEvent::Chat { text, team: Some(Team::Alpha), .. } if text == "rush B"
+    )));
 }

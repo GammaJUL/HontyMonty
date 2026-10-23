@@ -52,6 +52,7 @@ pub struct Arsenal {
     pub spread: f32,
     pub kick: f32,
     pub slash: f32,
+    pub heavy_stab: bool,
     pub move_speed_cache: f32,
 }
 
@@ -74,6 +75,7 @@ impl Default for Arsenal {
             spread: 0.0,
             kick: 0.0,
             slash: 0.0,
+            heavy_stab: false,
             move_speed_cache: 6.4,
         }
     }
@@ -422,14 +424,19 @@ fn fire(
             }
         }
         Held::Weapon(WeaponId::Knife) => {
-            if controls.pressed(Action::Fire) && now >= arsenal.next_fire && now >= arsenal.draw_end {
-                let def = WeaponId::Knife.def();
-                arsenal.next_fire = now + def.fire_interval;
+            // Left click: quick slash. Right click: slow, heavy stab.
+            let heavy = controls.pressed(Action::Scope);
+            let swing = heavy || controls.pressed(Action::Fire);
+            if swing && now >= arsenal.next_fire && now >= arsenal.draw_end {
+                let interval = if heavy { KNIFE_HEAVY_INTERVAL } else { WeaponId::Knife.def().fire_interval };
+                arsenal.next_fire = now + interval;
                 arsenal.slash = 1.0;
+                arsenal.heavy_stab = heavy;
                 client.send_cmd(Cmd::Fire {
                     weapon: WeaponId::Knife,
                     origin: eye.to_array(),
                     dirs: vec![forward.to_array()],
+                    heavy,
                 });
                 sfx.write(PlaySfx::fx(Sound::Shot(WeaponClass::Knife), 0.6));
             }
@@ -467,6 +474,7 @@ fn fire(
                 weapon: w,
                 origin: eye.to_array(),
                 dirs: dirs.iter().map(|d| d.to_array()).collect(),
+                heavy: false,
             });
             for (i, d) in dirs.iter().enumerate() {
                 let dist = raycast_map(eye, *d, def.range);
@@ -640,8 +648,14 @@ fn animate_viewmodel(
         pos.y -= draw * 0.2;
         if arsenal.slash > 0.0 {
             let s = (arsenal.slash * std::f32::consts::PI).sin();
-            rot *= Quat::from_rotation_y(s * 0.9) * Quat::from_rotation_x(-s * 0.4);
-            pos.x -= s * 0.1;
+            if arsenal.heavy_stab {
+                // Straight forward thrust.
+                pos.z -= s * 0.18;
+                rot *= Quat::from_rotation_x(-s * 0.3);
+            } else {
+                rot *= Quat::from_rotation_y(s * 0.9) * Quat::from_rotation_x(-s * 0.4);
+                pos.x -= s * 0.1;
+            }
         }
         if arsenal.scope > 0 && !sniper_scoped {
             pos = Vec3::new(0.0, -0.12, -0.32);

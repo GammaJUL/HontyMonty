@@ -68,6 +68,58 @@ struct SmokePuff {
     mat: Handle<StandardMaterial>,
 }
 
+/// One smoke grenade volume (the puffs are separate entities).
+#[derive(Component)]
+struct SmokeCloud {
+    pos: Vec3,
+    age: f32,
+}
+
+/// Active smoke volumes as (center, strength 0..1), rebuilt every frame.
+#[derive(Resource, Default)]
+pub struct ActiveSmokes(pub Vec<(Vec3, f32)>);
+
+const SMOKE_HALF_HEIGHT: f32 = 2.2;
+
+impl ActiveSmokes {
+    /// 1.0 deep inside a smoke, fading to 0.0 towards its edge.
+    pub fn density_at(&self, p: Vec3) -> f32 {
+        self.0
+            .iter()
+            .map(|(c, strength)| {
+                let d = p - *c;
+                let n = Vec3::new(d.x / SMOKE_RADIUS, d.y / SMOKE_HALF_HEIGHT, d.z / SMOKE_RADIUS).length();
+                (1.0 - smoothstep(0.55, 1.05, n)) * strength
+            })
+            .fold(0.0, f32::max)
+    }
+
+    /// True if the segment passes through enough smoke to hide what is behind it.
+    pub fn blocks(&self, a: Vec3, b: Vec3) -> bool {
+        if self.0.is_empty() {
+            return false;
+        }
+        let len = a.distance(b);
+        let steps = (len / 0.25).ceil().max(1.0) as usize;
+        let step = len / steps as f32;
+        let thickness: f32 = (0..steps)
+            .map(|i| self.density_at(a.lerp(b, (i as f32 + 0.5) / steps as f32)) * step)
+            .sum();
+        thickness > 1.2
+    }
+}
+
+fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn smoke_strength(age: f32) -> f32 {
+    let grow = (age / 1.2).clamp(0.0, 1.0);
+    let fade = ((SMOKE_DURATION - age) / 2.5).clamp(0.0, 1.0);
+    grow * fade
+}
+
 #[derive(Component)]
 struct Expand {
     age: f32,
@@ -78,9 +130,13 @@ struct Expand {
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<ScreenEffects>()
+        .init_resource::<ActiveSmokes>()
         .add_systems(
             OnEnter(crate::states::AppState::InGame),
-            |mut c: Commands| c.insert_resource(ScreenEffects::default()),
+            |mut c: Commands| {
+                c.insert_resource(ScreenEffects::default());
+                c.insert_resource(ActiveSmokes::default());
+            },
         )
         .add_systems(Update, handle_events.in_set(GameSet::Simulate))
         .add_systems(
@@ -90,6 +146,7 @@ pub fn plugin(app: &mut App) {
                 lifetimes,
                 simulate_grenades,
                 animate_smoke,
+                track_smokes,
                 animate_fire,
                 animate_expand,
                 decay_screen,
@@ -176,6 +233,7 @@ fn simulate_grenades(time: Res<Time>, mut q: Query<(&mut GrenadeVisual, &mut Tra
 }
 
 fn spawn_smoke(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &mut Assets<StandardMaterial>, pos: Vec3) {
+    commands.spawn((InGameEntity, SmokeCloud { pos, age: 0.0 }));
     let mesh = meshes.add(Sphere::new(1.0));
     for i in 0..22 {
         let a = i as f32 * 2.399;
@@ -199,6 +257,23 @@ fn spawn_smoke(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &mut As
             MeshMaterial3d(mat),
             Transform::from_translation(pos + offset).with_scale(Vec3::splat(0.01)),
         ));
+    }
+}
+
+fn track_smokes(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut clouds: Query<(Entity, &mut SmokeCloud)>,
+    mut active: ResMut<ActiveSmokes>,
+) {
+    active.0.clear();
+    for (e, mut c) in &mut clouds {
+        c.age += time.delta_secs();
+        if c.age >= SMOKE_DURATION {
+            commands.entity(e).despawn();
+            continue;
+        }
+        active.0.push((c.pos + Vec3::Y * 1.6, smoke_strength(c.age)));
     }
 }
 
@@ -377,9 +452,10 @@ fn handle_events(
     cam_q: Query<&GlobalTransform, With<PlayerCamera>>,
     grenades: Query<(Entity, &GrenadeVisual)>,
     fires: Query<(Entity, &FireArea)>,
-    cleanup: Query<Entity, Or<(With<SmokePuff>, With<FireArea>, With<Impact>, With<GrenadeVisual>)>>,
+    cleanup: Query<Entity, Or<(With<SmokePuff>, With<SmokeCloud>, With<FireArea>, With<Impact>, With<GrenadeVisual>)>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
+    smokes: Res<ActiveSmokes>,
     mut fx: ResMut<ScreenEffects>,
     mut feed: ResMut<HudFeed>,
     mut sfx: MessageWriter<PlaySfx>,
@@ -487,7 +563,10 @@ fn handle_events(
                             let eye = cam.translation();
                             let to = pos - eye;
                             let d = to.length();
-                            if d < 30.0 && line_of_sight(eye, pos + Vec3::Y * 0.05) {
+                            if d < 30.0
+                                && line_of_sight(eye, pos + Vec3::Y * 0.05)
+                                && !smokes.blocks(eye, pos + Vec3::Y * 0.05)
+                            {
                                 let facing = cam.forward().dot(to / d.max(0.01));
                                 let look = if facing > 0.5 { 1.0 } else if facing > -0.3 { 0.5 } else { 0.2 };
                                 let strength = look * (1.0 - d / 30.0).clamp(0.2, 1.0);
@@ -552,7 +631,14 @@ fn handle_events(
                 feed.center(format!("MATCH OVER\n{winner}"), 9.0);
                 sfx.write(PlaySfx::ui(Sound::RoundEnd));
             }
-            GameEvent::Chat { from, text } => feed.info(format!("{from}: {text}")),
+            GameEvent::Chat { from, text, team } => {
+                let my_team = c.me().map(|p| p.team);
+                match team {
+                    None => feed.chat(format!("{from}: {text}")),
+                    Some(t) if Some(t) == my_team => feed.chat(format!("(Team) {from}: {text}")),
+                    Some(_) => {}
+                }
+            }
             GameEvent::Info(text) => feed.info(text),
         }
     }

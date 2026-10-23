@@ -4,19 +4,21 @@ Ideas and known gaps, roughly ordered by impact. Tick items off as they land.
 
 ## Gameplay
 - [ ] Bots (fill empty slots, practice offline)
-- [ ] Spectator camera when dead (cycle through alive teammates)
+- [x] Spectator camera when dead (cycle through alive teammates)
 - [ ] Bomb plant/defuse objective mode (Alpha attacks, Bravo defends) + side swap at half-time
 - [ ] Drop / pick up weapons (G key), dropped guns on death
 - [ ] Wallbangs (penetration through thin walls / crates with damage falloff)
 - [ ] Real spray patterns per weapon instead of the generic climb + sway
-- [ ] Knife right-click heavy stab and backstab damage
+- [x] Knife right-click heavy stab and backstab damage
 - [ ] Player-vs-player collision
 - [ ] Fall damage
 - [ ] Defuse kit, Zeus, decoy and incendiary (team variants of molotov)
 - [ ] Friendly-fire toggle in lobby settings
 - [ ] Overtime rules for tied team matches
-- [ ] Smoke actually blocks the server's line of sight checks (flash/HE) and hides name tags
-- [ ] Footstep sounds for other players (positional)
+- [x] Smoke blocks flashbangs and hides name tags (client side)
+- [x] Gray screen fog while standing inside a smoke, fading towards the edge
+- [x] Footstep sounds for other players (volume by distance; walking/crouching is silent)
+- [ ] Left/right panning for footsteps and shots
 
 ## Maps
 - [ ] More maps + map vote in the lobby
@@ -28,8 +30,8 @@ Ideas and known gaps, roughly ordered by impact. Tick items off as they land.
 - [ ] Lag compensation (rewind hitboxes to the shooter's view time)
 - [ ] Server-side movement validation / anti-cheat (speed, fire-rate, ammo checks)
 - [ ] Internet play: NAT punch-through or a relay / dedicated server binary
-- [ ] Ping display on the scoreboard
-- [ ] Text chat UI (protocol already supports `Cmd::Chat`)
+- [x] Ping display on the scoreboard
+- [x] Text chat (Y = all, U = team)
 - [ ] Host migration when the host leaves
 - [ ] Kick / ban for the host, lobby max-players setting
 

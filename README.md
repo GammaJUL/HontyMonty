@@ -52,6 +52,9 @@ You can test locally by starting the game twice on one PC.
 | Primary / Secondary / Knife / Grenades | 1 / 2 / 3 / 4 (or mouse wheel) |
 | Buy menu | B |
 | Scoreboard | Tab |
+| Chat (all / team) | Y / U |
+| Knife: slash / heavy stab | Mouse 1 / Mouse 2 |
+| Spectate next / previous (when dead) | Mouse 1 / Mouse 2 |
 | Pause menu | Esc |
 
 ## Code layout
@@ -72,7 +75,23 @@ You can test locally by starting the game twice on one PC.
 
 ## Dev shortcuts
 
-Environment variables, handy for quick iteration:
+Environment variables, handy for quick iteration.
+
+PowerShell (Windows):
+
+```powershell
+$env:HONTY_DEV_STATE="ingame"; cargo run                       # host + start a 1v1 immediately
+$env:HONTY_DEV_STATE="ingame"; $env:HONTY_DEV_MODE="ffa"; cargo run
+$env:HONTY_DEV_STATE="ingame"; $env:HONTY_DEV_SMOKE="0"; cargo run   # smoke on top of you
+$env:HONTY_DEV_STATE="host"; cargo run                         # window 1: host, starts when someone joins
+$env:HONTY_DEV_STATE="join"; cargo run                         # window 2: joins 127.0.0.1:27015
+$env:HONTY_DEV_STATE="inventory"; $env:HONTY_DEV_OPEN="1"; cargo run
+
+# Variables stick for the whole terminal session; clear them to get the normal menu back:
+Remove-Item Env:HONTY_DEV_*
+```
+
+Bash (Linux/macOS/Git Bash):
 
 ```sh
 HONTY_DEV_STATE=ingame cargo run                  # host + start a 1v1 immediately

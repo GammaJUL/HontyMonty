@@ -36,7 +36,7 @@ fn toggle(
         .as_ref()
         .and_then(|c| Some((c.me()?, c.snapshot.as_ref()?)))
         .is_some_and(|(me, s)| me.alive && s.buy_time_left > 0.0);
-    if controls.just_pressed(Action::BuyMenu) && !ui.pause_open && !open.0 {
+    if controls.just_pressed(Action::BuyMenu) && !ui.pause_open && !ui.chat_open && !open.0 {
         ui.buy_open = !ui.buy_open && can_buy;
     }
     if ui.buy_open && !can_buy {

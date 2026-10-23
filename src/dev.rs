@@ -6,6 +6,7 @@
 //!   `HONTY_DEV_STATE=join` (in a second instance) joins 127.0.0.1:27015.
 //! * `HONTY_DEV_MODE=1v1|2v2|5v5|ffa` picks the mode when hosting.
 //! * `HONTY_DEV_SETTINGS=1` opens the settings overlay.
+//! * `HONTY_DEV_SMOKE=<meters>` pops a smoke that far in front of the spawn (0 = on top of you).
 //! * `HONTY_DEV_OPEN=1` opens one case (inventory) or the buy menu (in game).
 //! * `HONTY_DEV_SCREENSHOT=path.png` saves a screenshot after ~7 s and exits.
 
@@ -15,10 +16,12 @@ use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 
 use crate::game::remote::RemotePlayer;
+use crate::game::player::LocalPlayer;
 use crate::game::GameUi;
 use crate::game_mode::GameMode;
-use crate::net::protocol::{Cmd, DEFAULT_PORT};
-use crate::net::{GameServer, NetClient};
+use crate::net::protocol::{Cmd, GameEvent, DEFAULT_PORT};
+use crate::net::{GameServer, NetClient, NetEvent};
+use crate::weapons::GrenadeKind;
 use crate::profile::Profile;
 use crate::settings::Settings;
 use crate::states::AppState;
@@ -52,6 +55,8 @@ fn drive(
     mut exit: MessageWriter<AppExit>,
     mut step: Local<u32>,
     mut started: Local<bool>,
+    mut net_events: MessageWriter<NetEvent>,
+    me: Query<&Transform, With<LocalPlayer>>,
 ) {
     let t = time.elapsed_secs();
     let target = env("HONTY_DEV_STATE");
@@ -110,6 +115,16 @@ fn drive(
     }
     if *step == 1 && t > 4.0 {
         *step = 2;
+        if let Ok(offset) = env("HONTY_DEV_SMOKE").parse::<f32>()
+            && let Ok(t) = me.single()
+        {
+            let pos = t.translation + t.rotation * Vec3::NEG_Z * offset;
+            net_events.write(NetEvent(GameEvent::GrenadeDetonate {
+                id: 9999,
+                kind: GrenadeKind::Smoke,
+                pos: pos.to_array(),
+            }));
+        }
         if !env("HONTY_DEV_SETTINGS").is_empty() {
             commands.insert_resource(crate::ui::settings_menu::SettingsOpen(true));
         }

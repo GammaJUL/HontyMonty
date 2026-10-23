@@ -458,6 +458,22 @@ impl GrenadeKind {
     }
 }
 
+/// Knife damage: left-click slash or right-click stab, doubled-ish from behind like CS2.
+pub fn knife_damage(heavy: bool, backstab: bool) -> f32 {
+    match (heavy, backstab) {
+        (false, false) => 40.0,
+        (false, true) => 90.0,
+        (true, false) => 65.0,
+        (true, true) => 180.0,
+    }
+}
+
+pub fn knife_range(heavy: bool) -> f32 {
+    if heavy { 1.6 } else { 1.9 }
+}
+
+pub const KNIFE_HEAVY_INTERVAL: f32 = 1.0;
+
 pub const MAX_GRENADES: usize = 4;
 pub const HE_DAMAGE: f32 = 98.0;
 pub const HE_RADIUS: f32 = 9.0;
