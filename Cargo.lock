@@ -3072,7 +3072,10 @@ name = "honty-monty"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "fastrand",
  "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

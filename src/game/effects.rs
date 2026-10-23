@@ -1,0 +1,559 @@
+//! Visual/audio effects driven by server events: tracers, impacts, grenades,
+//! smoke, fire, explosions, flashbangs, and HUD feed updates.
+
+use bevy::prelude::*;
+
+use super::hud::HudFeed;
+use super::player::{LocalPlayer, PlayerCamera};
+use super::{GameSet, InGameEntity};
+use crate::audio::{PlaySfx, Sound};
+use crate::map::{line_of_sight, step_grenade};
+use crate::net::protocol::GameEvent;
+use crate::net::{NetClient, NetEvent};
+use crate::settings::Settings;
+use crate::weapon_model::spawn_grenade_model;
+use crate::weapons::*;
+
+const GRENADE_STEP: f32 = 1.0 / 120.0;
+
+#[derive(Resource, Default)]
+pub struct ScreenEffects {
+    pub shake: f32,
+    /// Seconds of full white remaining + fade length.
+    pub flash_hold: f32,
+    pub flash_fade: f32,
+    pub flash_total_fade: f32,
+    pub damage: f32,
+    pub hitmarker: f32,
+    pub hit_head: bool,
+}
+
+#[derive(Component)]
+pub struct Tracer {
+    from: Vec3,
+    to: Vec3,
+    ttl: f32,
+    mine: bool,
+}
+
+#[derive(Component)]
+struct Lifetime(f32);
+
+#[derive(Component)]
+struct Impact;
+
+#[derive(Component)]
+struct GrenadeVisual {
+    id: u32,
+    pos: Vec3,
+    vel: Vec3,
+    acc: f32,
+}
+
+#[derive(Component)]
+struct FireArea {
+    id: u32,
+}
+
+#[derive(Component)]
+struct Flicker {
+    base: f32,
+    seed: f32,
+}
+
+#[derive(Component)]
+struct SmokePuff {
+    age: f32,
+    size: f32,
+    mat: Handle<StandardMaterial>,
+}
+
+#[derive(Component)]
+struct Expand {
+    age: f32,
+    len: f32,
+    max: f32,
+    mat: Handle<StandardMaterial>,
+}
+
+pub fn plugin(app: &mut App) {
+    app.init_resource::<ScreenEffects>()
+        .add_systems(
+            OnEnter(crate::states::AppState::InGame),
+            |mut c: Commands| c.insert_resource(ScreenEffects::default()),
+        )
+        .add_systems(Update, handle_events.in_set(GameSet::Simulate))
+        .add_systems(
+            Update,
+            (
+                draw_tracers,
+                lifetimes,
+                simulate_grenades,
+                animate_smoke,
+                animate_fire,
+                animate_expand,
+                decay_screen,
+            )
+                .in_set(GameSet::Present),
+        );
+}
+
+pub fn spawn_tracer(commands: &mut Commands, from: Vec3, to: Vec3, mine: bool) {
+    commands.spawn((InGameEntity, Tracer { from, to, ttl: 0.06, mine }));
+}
+
+pub fn spawn_impact(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    mats: &mut Assets<StandardMaterial>,
+    at: Vec3,
+    dir: Vec3,
+) {
+    commands.spawn((
+        InGameEntity,
+        Impact,
+        Lifetime(8.0),
+        Mesh3d(meshes.add(Cuboid::new(0.05, 0.05, 0.05))),
+        MeshMaterial3d(mats.add(StandardMaterial {
+            base_color: Color::srgb(0.05, 0.05, 0.05),
+            ..default()
+        })),
+        Transform::from_translation(at - dir * 0.01),
+    ));
+}
+
+fn draw_tracers(time: Res<Time>, mut commands: Commands, mut gizmos: Gizmos, mut q: Query<(Entity, &mut Tracer)>) {
+    for (e, mut t) in &mut q {
+        let color = if t.mine {
+            Color::srgba(1.0, 0.9, 0.5, 0.6)
+        } else {
+            Color::srgba(1.0, 0.8, 0.4, 0.9)
+        };
+        // Draw only the far part for my own tracers so they don't block the view.
+        let from = if t.mine { t.from.lerp(t.to, 0.15) } else { t.from };
+        gizmos.line(from, t.to, color);
+        t.ttl -= time.delta_secs();
+        if t.ttl <= 0.0 {
+            commands.entity(e).despawn();
+        }
+    }
+}
+
+fn lifetimes(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut q: Query<(Entity, &mut Lifetime)>,
+    impacts: Query<Entity, With<Impact>>,
+) {
+    for (e, mut l) in &mut q {
+        l.0 -= time.delta_secs();
+        if l.0 <= 0.0 {
+            commands.entity(e).despawn();
+        }
+    }
+    // Keep the number of bullet holes bounded.
+    let n = impacts.iter().count();
+    if n > 120 {
+        for e in impacts.iter().take(n - 120) {
+            commands.entity(e).despawn();
+        }
+    }
+}
+
+fn simulate_grenades(time: Res<Time>, mut q: Query<(&mut GrenadeVisual, &mut Transform)>) {
+    for (mut g, mut t) in &mut q {
+        g.acc += time.delta_secs();
+        while g.acc >= GRENADE_STEP {
+            g.acc -= GRENADE_STEP;
+            let (mut pos, mut vel) = (g.pos, g.vel);
+            step_grenade(&mut pos, &mut vel, GRENADE_STEP);
+            g.pos = pos;
+            g.vel = vel;
+        }
+        t.translation = g.pos;
+        t.rotate_x(time.delta_secs() * g.vel.length() * 2.0);
+    }
+}
+
+fn spawn_smoke(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &mut Assets<StandardMaterial>, pos: Vec3) {
+    let mesh = meshes.add(Sphere::new(1.0));
+    for i in 0..22 {
+        let a = i as f32 * 2.399;
+        let r = (i as f32 / 22.0).sqrt() * (SMOKE_RADIUS - 1.0);
+        let offset = Vec3::new(a.cos() * r, 0.6 + fastrand::f32() * 2.2, a.sin() * r);
+        let grey = 0.62 + fastrand::f32() * 0.12;
+        let mat = mats.add(StandardMaterial {
+            base_color: Color::srgba(grey, grey, grey + 0.02, 0.0),
+            alpha_mode: AlphaMode::Blend,
+            perceptual_roughness: 1.0,
+            ..default()
+        });
+        commands.spawn((
+            InGameEntity,
+            SmokePuff {
+                age: -(i as f32) * 0.02,
+                size: 1.3 + fastrand::f32() * 0.7,
+                mat: mat.clone(),
+            },
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(mat),
+            Transform::from_translation(pos + offset).with_scale(Vec3::splat(0.01)),
+        ));
+    }
+}
+
+fn animate_smoke(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut q: Query<(Entity, &mut SmokePuff, &mut Transform)>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+) {
+    for (e, mut puff, mut t) in &mut q {
+        puff.age += time.delta_secs();
+        if puff.age < 0.0 {
+            continue;
+        }
+        let grow = (puff.age / 1.2).min(1.0);
+        let fade = ((SMOKE_DURATION - puff.age) / 2.5).clamp(0.0, 1.0);
+        t.scale = Vec3::splat(puff.size * (0.3 + 0.7 * grow));
+        t.translation.y += time.delta_secs() * 0.02;
+        if let Some(mut m) = mats.get_mut(&puff.mat) {
+            let c = m.base_color.to_srgba();
+            m.base_color = Color::srgba(c.red, c.green, c.blue, 0.93 * fade * grow.max(0.2));
+        }
+        if puff.age >= SMOKE_DURATION {
+            commands.entity(e).despawn();
+        }
+    }
+}
+
+fn spawn_fire(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    mats: &mut Assets<StandardMaterial>,
+    id: u32,
+    pos: Vec3,
+) {
+    let flame = mats.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 0.45, 0.05),
+        emissive: LinearRgba::rgb(8.0, 2.5, 0.3),
+        ..default()
+    });
+    commands
+        .spawn((
+            InGameEntity,
+            FireArea { id },
+            Lifetime(FIRE_DURATION + 0.5),
+            Transform::from_translation(pos),
+            Visibility::default(),
+        ))
+        .with_children(|p| {
+            p.spawn((
+                Mesh3d(meshes.add(Cylinder::new(FIRE_RADIUS, 0.03))),
+                MeshMaterial3d(mats.add(StandardMaterial {
+                    base_color: Color::srgb(0.15, 0.05, 0.0),
+                    emissive: LinearRgba::rgb(1.5, 0.4, 0.05),
+                    ..default()
+                })),
+                Transform::from_xyz(0.0, 0.02, 0.0),
+            ));
+            for i in 0..18 {
+                let a = i as f32 * 2.399;
+                let r = (i as f32 / 18.0).sqrt() * (FIRE_RADIUS - 0.3);
+                p.spawn((
+                    Flicker {
+                        base: 0.25 + fastrand::f32() * 0.35,
+                        seed: fastrand::f32() * 10.0,
+                    },
+                    Mesh3d(meshes.add(Cuboid::new(0.18, 1.0, 0.18))),
+                    MeshMaterial3d(flame.clone()),
+                    Transform::from_xyz(a.cos() * r, 0.2, a.sin() * r),
+                ));
+            }
+            p.spawn((
+                PointLight {
+                    intensity: 300_000.0,
+                    color: Color::srgb(1.0, 0.55, 0.2),
+                    range: 10.0,
+                    ..default()
+                },
+                Transform::from_xyz(0.0, 1.0, 0.0),
+            ));
+        });
+}
+
+fn animate_fire(time: Res<Time>, mut q: Query<(&Flicker, &mut Transform)>) {
+    let t = time.elapsed_secs();
+    for (f, mut tr) in &mut q {
+        let h = f.base * (0.7 + 0.3 * (t * 12.0 + f.seed).sin().abs() + 0.2 * (t * 23.0 + f.seed * 2.0).sin());
+        tr.scale = Vec3::new(1.0, h.max(0.05), 1.0);
+        tr.translation.y = h * 0.5;
+    }
+}
+
+fn spawn_flash_sphere(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    mats: &mut Assets<StandardMaterial>,
+    pos: Vec3,
+    color: LinearRgba,
+    max: f32,
+    len: f32,
+) {
+    let mat = mats.add(StandardMaterial {
+        base_color: Color::srgba(1.0, 0.9, 0.7, 0.9),
+        emissive: color,
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        ..default()
+    });
+    commands.spawn((
+        InGameEntity,
+        Expand {
+            age: 0.0,
+            len,
+            max,
+            mat: mat.clone(),
+        },
+        Mesh3d(meshes.add(Sphere::new(1.0))),
+        MeshMaterial3d(mat),
+        Transform::from_translation(pos).with_scale(Vec3::splat(0.1)),
+    ));
+    commands.spawn((
+        InGameEntity,
+        Lifetime(len),
+        PointLight {
+            intensity: 3_000_000.0,
+            color: Color::srgb(1.0, 0.85, 0.6),
+            range: 25.0,
+            ..default()
+        },
+        Transform::from_translation(pos + Vec3::Y * 0.5),
+    ));
+}
+
+fn animate_expand(
+    time: Res<Time>,
+    mut commands: Commands,
+    mut q: Query<(Entity, &mut Expand, &mut Transform)>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+) {
+    for (e, mut x, mut t) in &mut q {
+        x.age += time.delta_secs();
+        let k = (x.age / x.len).min(1.0);
+        t.scale = Vec3::splat(0.1 + x.max * k.sqrt());
+        if let Some(mut m) = mats.get_mut(&x.mat) {
+            m.base_color = Color::srgba(1.0, 0.9, 0.7, 0.9 * (1.0 - k));
+        }
+        if k >= 1.0 {
+            commands.entity(e).despawn();
+        }
+    }
+}
+
+fn decay_screen(time: Res<Time>, mut fx: ResMut<ScreenEffects>) {
+    let dt = time.delta_secs();
+    fx.shake = (fx.shake - dt * 2.0).max(0.0);
+    if fx.flash_hold > 0.0 {
+        fx.flash_hold -= dt;
+    } else {
+        fx.flash_fade = (fx.flash_fade - dt).max(0.0);
+    }
+    fx.damage = (fx.damage - dt * 2.0).max(0.0);
+    fx.hitmarker = (fx.hitmarker - dt * 3.0).max(0.0);
+}
+
+fn name_of(client: &NetClient, id: u8) -> String {
+    client.player(id).map(|p| p.name.clone()).unwrap_or_else(|| "?".into())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_events(
+    mut commands: Commands,
+    mut events: MessageReader<NetEvent>,
+    client: Option<Res<NetClient>>,
+    settings: Res<Settings>,
+    me_q: Query<(&LocalPlayer, &Transform)>,
+    cam_q: Query<&GlobalTransform, With<PlayerCamera>>,
+    grenades: Query<(Entity, &GrenadeVisual)>,
+    fires: Query<(Entity, &FireArea)>,
+    cleanup: Query<Entity, Or<(With<SmokePuff>, With<FireArea>, With<Impact>, With<GrenadeVisual>)>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    mut fx: ResMut<ScreenEffects>,
+    mut feed: ResMut<HudFeed>,
+    mut sfx: MessageWriter<PlaySfx>,
+) {
+    let Some(c) = client else {
+        events.clear();
+        return;
+    };
+    let me = c.my_id;
+    let my_pos = me_q.single().map(|(_, t)| t.translation).unwrap_or_default();
+    let cam = cam_q.single().ok();
+    let dist_vol = |p: Vec3| (1.0 - p.distance(my_pos) / 60.0).clamp(0.08, 1.0);
+
+    for NetEvent(e) in events.read() {
+        match e.clone() {
+            GameEvent::Shot { shooter, weapon, from, to } => {
+                if Some(shooter) == me {
+                    continue;
+                }
+                let from = Vec3::from(from);
+                spawn_tracer(&mut commands, from, Vec3::from(to), false);
+                sfx.write(PlaySfx::fx(Sound::Shot(weapon.def().class), 0.8 * dist_vol(from)));
+            }
+            GameEvent::Hit { attacker, victim, damage, headshot } => {
+                if Some(attacker) == me && Some(victim) != me {
+                    fx.hitmarker = 1.0;
+                    fx.hit_head = headshot;
+                    if settings.hitsound {
+                        sfx.write(PlaySfx::fx(if headshot { Sound::Headshot } else { Sound::Hit }, 0.7));
+                    }
+                }
+                if Some(victim) == me {
+                    fx.damage = (fx.damage + damage as f32 / 40.0).min(1.0);
+                    fx.shake = (fx.shake + 0.3).min(1.0);
+                    if headshot {
+                        sfx.write(PlaySfx::fx(Sound::Headshot, 0.5));
+                    }
+                }
+            }
+            GameEvent::Kill { killer, victim, source, headshot } => {
+                let killer_name = name_of(&c, killer);
+                let victim_name = name_of(&c, victim);
+                let involved = Some(killer) == me || Some(victim) == me;
+                let text = if killer == victim {
+                    format!("{victim_name} [{}] (suicide)", source.name())
+                } else {
+                    format!(
+                        "{killer_name}  [{}{}]  {victim_name}",
+                        source.name(),
+                        if headshot { " HS" } else { "" }
+                    )
+                };
+                feed.kill(text, involved);
+                if Some(killer) == me && killer != victim {
+                    sfx.write(PlaySfx::fx(Sound::Kill, 0.6));
+                }
+                if Some(victim) == me {
+                    feed.killed_by = Some(if killer == victim {
+                        format!("You killed yourself with a {}", source.name())
+                    } else {
+                        format!(
+                            "Killed by {killer_name} ({}{})",
+                            source.name(),
+                            if headshot { ", headshot" } else { "" }
+                        )
+                    });
+                }
+            }
+            GameEvent::GrenadeThrown { id, kind, pos, vel, .. } => {
+                let model = spawn_grenade_model(&mut commands, &mut meshes, &mut mats, kind);
+                commands.entity(model).insert((
+                    InGameEntity,
+                    GrenadeVisual {
+                        id,
+                        pos: Vec3::from(pos),
+                        vel: Vec3::from(vel),
+                        acc: 0.0,
+                    },
+                    Transform::from_translation(Vec3::from(pos)),
+                ));
+            }
+            GameEvent::GrenadeDetonate { id, kind, pos } => {
+                for (e, g) in &grenades {
+                    if g.id == id {
+                        commands.entity(e).despawn();
+                    }
+                }
+                let pos = Vec3::from(pos);
+                let vol = dist_vol(pos);
+                match kind {
+                    GrenadeKind::He => {
+                        spawn_flash_sphere(&mut commands, &mut meshes, &mut mats, pos, LinearRgba::rgb(20.0, 8.0, 2.0), 4.0, 0.45);
+                        sfx.write(PlaySfx::fx(Sound::Explosion, vol));
+                        let d = pos.distance(my_pos);
+                        if d < 15.0 {
+                            fx.shake = (fx.shake + (1.0 - d / 15.0)).min(1.5);
+                        }
+                    }
+                    GrenadeKind::Flash => {
+                        spawn_flash_sphere(&mut commands, &mut meshes, &mut mats, pos, LinearRgba::rgb(40.0, 40.0, 40.0), 1.5, 0.15);
+                        sfx.write(PlaySfx::fx(Sound::Flash, vol));
+                        if let (Some(cam), Ok((p, _))) = (cam, me_q.single())
+                            && p.alive
+                        {
+                            let eye = cam.translation();
+                            let to = pos - eye;
+                            let d = to.length();
+                            if d < 30.0 && line_of_sight(eye, pos + Vec3::Y * 0.05) {
+                                let facing = cam.forward().dot(to / d.max(0.01));
+                                let look = if facing > 0.5 { 1.0 } else if facing > -0.3 { 0.5 } else { 0.2 };
+                                let strength = look * (1.0 - d / 30.0).clamp(0.2, 1.0);
+                                fx.flash_hold = fx.flash_hold.max(strength * 2.0);
+                                fx.flash_fade = fx.flash_fade.max(strength * 3.0);
+                                fx.flash_total_fade = fx.flash_fade.max(0.01);
+                            }
+                        }
+                    }
+                    GrenadeKind::Smoke => {
+                        spawn_smoke(&mut commands, &mut meshes, &mut mats, pos);
+                        sfx.write(PlaySfx::fx(Sound::Smoke, vol));
+                    }
+                    GrenadeKind::Molotov => {
+                        spawn_fire(&mut commands, &mut meshes, &mut mats, id, pos);
+                        sfx.write(PlaySfx::fx(Sound::Fire, vol));
+                    }
+                }
+            }
+            GameEvent::FireOut { id } => {
+                for (e, f) in &fires {
+                    if f.id == id {
+                        commands.entity(e).despawn();
+                    }
+                }
+            }
+            GameEvent::Bought { player, item } => {
+                if Some(player) == me {
+                    sfx.write(PlaySfx::ui(Sound::Buy));
+                    feed.info(format!("Bought {}", item.name()));
+                }
+            }
+            GameEvent::BuyDenied { player, reason } => {
+                if Some(player) == me {
+                    sfx.write(PlaySfx::ui(Sound::Deny));
+                    feed.info(reason);
+                }
+            }
+            GameEvent::RoundStart { round } => {
+                for e in &cleanup {
+                    commands.entity(e).despawn();
+                }
+                feed.killed_by = None;
+                let mode = c.snapshot.as_ref().map(|s| s.lobby.mode);
+                let text = if mode.is_some_and(|m| m.is_ffa()) {
+                    "All vs All - first to 25 kills".to_string()
+                } else {
+                    format!("Round {round}")
+                };
+                feed.center(text, 2.5);
+                sfx.write(PlaySfx::ui(Sound::RoundStart));
+            }
+            GameEvent::RoundEnd { winner, reason } => {
+                let head = match winner {
+                    Some(t) => format!("{} wins the round", t.name()),
+                    None => "Round draw".to_string(),
+                };
+                feed.center(format!("{head}\n{reason}"), 4.5);
+                sfx.write(PlaySfx::ui(Sound::RoundEnd));
+            }
+            GameEvent::MatchEnd { winner } => {
+                feed.center(format!("MATCH OVER\n{winner}"), 9.0);
+                sfx.write(PlaySfx::ui(Sound::RoundEnd));
+            }
+            GameEvent::Chat { from, text } => feed.info(format!("{from}: {text}")),
+            GameEvent::Info(text) => feed.info(text),
+        }
+    }
+}
