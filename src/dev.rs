@@ -7,6 +7,7 @@
 //! * `HONTY_DEV_MODE=1v1|2v2|5v5|ffa` picks the mode when hosting.
 //! * `HONTY_DEV_SETTINGS=1` opens the settings overlay.
 //! * `HONTY_DEV_SMOKE=<meters>` pops a smoke that far in front of the spawn (0 = on top of you).
+//! * `HONTY_DEV_LOOK=<facial hair>,<accessory>` (indices) previews character options without saving.
 //! * `HONTY_DEV_OPEN=1` opens one case (inventory) or the buy menu (in game).
 //! * `HONTY_DEV_SCREENSHOT=path.png` saves a screenshot after ~7 s and exits.
 
@@ -46,7 +47,7 @@ fn drive(
     mut commands: Commands,
     time: Res<Time<Real>>,
     settings: Res<Settings>,
-    profile: Res<Profile>,
+    mut profile: ResMut<Profile>,
     client: Option<ResMut<NetClient>>,
     state: Res<State<AppState>>,
     remotes: Query<&RemotePlayer>,
@@ -62,6 +63,12 @@ fn drive(
     let target = env("HONTY_DEV_STATE");
     if *step == 0 && t > 1.0 {
         *step = 1;
+        if let Some((f, a)) = env("HONTY_DEV_LOOK").split_once(',') {
+            use crate::profile::{Accessory, FacialHair};
+            let look = &mut profile.appearance;
+            look.facial_hair = FacialHair::ALL[f.parse::<usize>().unwrap_or(0) % FacialHair::ALL.len()];
+            look.accessory = Accessory::ALL[a.parse::<usize>().unwrap_or(0) % Accessory::ALL.len()];
+        }
         match target.as_str() {
             "customize" => next.set(AppState::Customize),
             "inventory" => {

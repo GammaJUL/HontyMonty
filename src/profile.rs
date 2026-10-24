@@ -56,6 +56,69 @@ impl HairStyle {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum FacialHair {
+    #[default]
+    None,
+    Stubble,
+    Mustache,
+    Goatee,
+    Beard,
+}
+
+impl FacialHair {
+    pub const ALL: [FacialHair; 5] = [
+        FacialHair::None,
+        FacialHair::Stubble,
+        FacialHair::Mustache,
+        FacialHair::Goatee,
+        FacialHair::Beard,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            FacialHair::None => "None",
+            FacialHair::Stubble => "Stubble",
+            FacialHair::Mustache => "Mustache",
+            FacialHair::Goatee => "Goatee",
+            FacialHair::Beard => "Full Beard",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Accessory {
+    #[default]
+    None,
+    Glasses,
+    Sunglasses,
+    Cap,
+    Beanie,
+    Headband,
+}
+
+impl Accessory {
+    pub const ALL: [Accessory; 6] = [
+        Accessory::None,
+        Accessory::Glasses,
+        Accessory::Sunglasses,
+        Accessory::Cap,
+        Accessory::Beanie,
+        Accessory::Headband,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Accessory::None => "None",
+            Accessory::Glasses => "Glasses",
+            Accessory::Sunglasses => "Sunglasses",
+            Accessory::Cap => "Cap",
+            Accessory::Beanie => "Beanie",
+            Accessory::Headband => "Headband",
+        }
+    }
+}
+
 pub type Palette = &'static [(&'static str, [f32; 3])];
 
 pub const SKIN_TONES: Palette = &[
@@ -113,6 +176,8 @@ pub struct Appearance {
     pub pants_color: usize,
     /// 0.9 ..= 1.1 body height scale.
     pub height: f32,
+    pub facial_hair: FacialHair,
+    pub accessory: Accessory,
 }
 
 impl Default for Appearance {
@@ -126,6 +191,8 @@ impl Default for Appearance {
             shirt_color: 0,
             pants_color: 1,
             height: 1.0,
+            facial_hair: FacialHair::None,
+            accessory: Accessory::None,
         }
     }
 }
@@ -141,6 +208,8 @@ pub struct EquippedSkin {
     pub weapon: WeaponId,
     pub skin_id: u16,
     pub float: f32,
+    #[serde(default)]
+    pub pattern_seed: u16,
 }
 
 #[derive(Resource, Clone, Debug, Serialize, Deserialize, Default)]
@@ -176,6 +245,7 @@ impl Profile {
                     weapon: *w,
                     skin_id: s.skin_id,
                     float: s.float,
+                    pattern_seed: s.pattern_seed,
                 })
             })
             .collect()

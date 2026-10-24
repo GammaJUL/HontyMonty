@@ -264,6 +264,9 @@ pub struct OwnedSkin {
     pub float: f32,
     pub stattrak: bool,
     pub pattern_seed: u16,
+    /// StatTrak kill counter.
+    #[serde(default)]
+    pub kills: u32,
 }
 
 impl OwnedSkin {
@@ -329,6 +332,7 @@ pub fn open_case(rng: &mut fastrand::Rng, uid: u64) -> OwnedSkin {
         float: roll_float(rng, def),
         stattrak: rng.f32() < 0.10,
         pattern_seed: rng.u16(0..1000),
+        kills: 0,
     }
 }
 

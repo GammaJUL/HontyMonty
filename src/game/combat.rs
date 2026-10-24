@@ -7,7 +7,7 @@ use bevy::camera::PerspectiveProjection;
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 
-use super::effects::{spawn_impact, spawn_tracer};
+use super::effects::{spawn_casing, spawn_impact, spawn_muzzle_flash, spawn_tracer, ParticleAssets};
 use super::player::{horizontal_to_vertical, LocalPlayer, PlayerCamera};
 use super::{GameSet, GameUi, InGameEntity};
 use crate::audio::{PlaySfx, Sound};
@@ -53,6 +53,8 @@ pub struct Arsenal {
     pub kick: f32,
     pub slash: f32,
     pub heavy_stab: bool,
+    /// Seconds left of the inspect animation.
+    pub inspect: f32,
     pub move_speed_cache: f32,
 }
 
@@ -76,6 +78,7 @@ impl Default for Arsenal {
             kick: 0.0,
             slash: 0.0,
             heavy_stab: false,
+            inspect: 0.0,
             move_speed_cache: 6.4,
         }
     }
@@ -136,6 +139,7 @@ impl Arsenal {
             return;
         }
         self.held = held;
+        self.inspect = 0.0;
         self.scope = 0;
         self.rescope = None;
         self.reload_end = None;
@@ -168,7 +172,7 @@ pub fn plugin(app: &mut App) {
         .add_systems(OnEnter(AppState::InGame), |mut c: Commands| c.insert_resource(Arsenal::default()))
         .add_systems(
             Update,
-            (sync_inventory, switch_weapons, reload, fire, scope_and_fov, recover)
+            (sync_inventory, switch_weapons, inspect, drop_weapon, reload, fire, scope_and_fov, recover)
                 .chain()
                 .in_set(GameSet::Simulate),
         )
@@ -336,6 +340,7 @@ fn reload(
 
 fn start_reload(arsenal: &mut Arsenal, w: WeaponId, now: f32) {
     arsenal.reload_end = Some(now + w.def().reload_time);
+    arsenal.inspect = 0.0;
     arsenal.scope = 0;
     arsenal.rescope = None;
 }
@@ -384,6 +389,7 @@ fn fire(
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut sfx: MessageWriter<PlaySfx>,
+    particles: Res<ParticleAssets>,
     mut rng: Local<Option<fastrand::Rng>>,
 ) {
     let rng = rng.get_or_insert_with(fastrand::Rng::new);
@@ -486,11 +492,16 @@ fn fire(
                     spawn_impact(&mut commands, &mut meshes, &mut mats, end, *d);
                 }
             }
+            spawn_muzzle_flash(&mut commands, muzzle);
+            let eject = eye + aim * Vec3::new(0.16, -0.1, -0.35);
+            let fling = aim * Vec3::new(2.2 + rng.f32(), 1.4 + rng.f32() * 0.6, 0.3) + p.vel;
+            spawn_casing(&mut commands, &particles, eject, fling);
             // Recoil: vertical climb, then horizontal sway once the spray gets long.
-            let kick = def.recoil_kick * (1.0 + rng.f32() * 0.25);
-            arsenal.punch.y += kick;
-            let sway = if arsenal.spray > 4.0 { (arsenal.spray * 0.7).sin() * kick * 0.9 } else { (rng.f32() - 0.5) * kick * 0.4 };
-            arsenal.punch.x += sway;
+            // Recoil follows a fixed per-weapon pattern (learnable, like CS) with a little jitter.
+            let (yaw, pitch) = spray_step(w, arsenal.spray.round() as u32);
+            let jitter = 1.0 + (rng.f32() - 0.5) * 0.15;
+            arsenal.punch.y += def.recoil_kick * pitch * jitter;
+            arsenal.punch.x += def.recoil_kick * yaw * jitter;
             arsenal.spray += 1.0;
             arsenal.last_shot = now;
             arsenal.kick = 1.0;
@@ -550,13 +561,51 @@ fn scope_and_fov(
 fn recover(time: Res<Time>, mut arsenal: ResMut<Arsenal>) {
     let dt = time.delta_secs();
     let now = time.elapsed_secs();
-    let k = 1.0 - (-6.0 * dt).exp();
+    // Recover slowly mid-spray so the pattern builds up, quickly once you let go.
+    let rate = if now - arsenal.last_shot < 0.2 { 1.5 } else { 7.0 };
+    let k = 1.0 - (-rate * dt).exp();
     arsenal.punch *= 1.0 - k;
     if now - arsenal.last_shot > 0.25 {
         arsenal.spray = (arsenal.spray - dt * 18.0).max(0.0);
     }
     arsenal.kick = (arsenal.kick - dt * 8.0).max(0.0);
     arsenal.slash = (arsenal.slash - dt * 3.5).max(0.0);
+    arsenal.inspect = (arsenal.inspect - dt).max(0.0);
+}
+
+const INSPECT_TIME: f32 = 2.6;
+
+/// F shows off the weapon (and its skin); any other action cancels it.
+fn inspect(controls: Controls, ui: Res<GameUi>, open: Res<SettingsOpen>, mut arsenal: ResMut<Arsenal>) {
+    if ui.any_open(&open) {
+        return;
+    }
+    if controls.just_pressed(Action::Fire) || controls.just_pressed(Action::Scope) {
+        arsenal.inspect = 0.0;
+    } else if controls.just_pressed(Action::Inspect) && !arsenal.reloading() && arsenal.scope == 0 {
+        arsenal.inspect = INSPECT_TIME;
+    }
+}
+
+/// G throws the gun in your hands on the ground (the server moves it out of the inventory).
+fn drop_weapon(
+    controls: Controls,
+    ui: Res<GameUi>,
+    open: Res<SettingsOpen>,
+    client: Option<ResMut<NetClient>>,
+    arsenal: Res<Arsenal>,
+    players: Query<&LocalPlayer>,
+    mut sfx: MessageWriter<PlaySfx>,
+) {
+    if ui.any_open(&open) || !controls.just_pressed(Action::Drop) || !players.single().is_ok_and(|p| p.alive) {
+        return;
+    }
+    if let Some(w) = arsenal.weapon().filter(|w| *w != WeaponId::Knife)
+        && let Some(mut c) = client
+    {
+        c.send_cmd(Cmd::Drop(w));
+        sfx.write(PlaySfx::fx(Sound::Throw, 0.5));
+    }
 }
 
 // ---------------------------------------------------------------- viewmodel
@@ -656,6 +705,14 @@ fn animate_viewmodel(
                 rot *= Quat::from_rotation_y(s * 0.9) * Quat::from_rotation_x(-s * 0.4);
                 pos.x -= s * 0.1;
             }
+        }
+        if arsenal.inspect > 0.0 {
+            // Turn the gun to show its side, then tilt it back.
+            let p = 1.0 - arsenal.inspect / INSPECT_TIME;
+            let e = (p * std::f32::consts::PI).sin().powf(0.6);
+            pos += Vec3::new(-0.12, 0.06, 0.06) * e;
+            rot *= Quat::from_rotation_y(-1.5 * e)
+                * Quat::from_rotation_z((p * std::f32::consts::TAU).sin() * 0.35 * e);
         }
         if arsenal.scope > 0 && !sniper_scoped {
             pos = Vec3::new(0.0, -0.12, -0.32);

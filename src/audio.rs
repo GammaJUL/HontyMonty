@@ -4,7 +4,7 @@ use std::num::NonZero;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bevy::audio::{AddAudioSource, Decodable, PlaybackMode, Sample, Source, Volume};
+use bevy::audio::{AddAudioSource, Decodable, PlaybackMode, Sample, Source, SpatialScale, Volume};
 use bevy::prelude::*;
 
 use crate::cases::Rarity;
@@ -92,14 +92,20 @@ pub struct PlaySfx {
     pub sound: Sound,
     pub volume: f32,
     pub channel: Channel,
+    /// World position for left/right panning (needs a `SpatialListener`).
+    pub pos: Option<Vec3>,
 }
 
 impl PlaySfx {
     pub fn fx(sound: Sound, volume: f32) -> Self {
-        Self { sound, volume, channel: Channel::Effects }
+        Self { sound, volume, channel: Channel::Effects, pos: None }
+    }
+    /// A sound coming from somewhere in the world.
+    pub fn fx_at(sound: Sound, volume: f32, pos: Vec3) -> Self {
+        Self { pos: Some(pos), ..Self::fx(sound, volume) }
     }
     pub fn ui(sound: Sound) -> Self {
-        Self { sound, volume: 1.0, channel: Channel::Ui }
+        Self { sound, volume: 1.0, channel: Channel::Ui, pos: None }
     }
 }
 
@@ -183,8 +189,13 @@ fn play_sfx(
             PlaybackSettings {
                 mode: PlaybackMode::Despawn,
                 volume: Volume::Linear(volume),
+                spatial: msg.pos.is_some(),
+                // Shrink the world so rodio's 1/d^2 falloff never kicks in; callers
+                // scale volume by distance themselves and we only want panning.
+                spatial_scale: Some(SpatialScale::new(0.02)),
                 ..PlaybackSettings::DESPAWN
             },
+            Transform::from_translation(msg.pos.unwrap_or_default()),
         ));
     }
 }

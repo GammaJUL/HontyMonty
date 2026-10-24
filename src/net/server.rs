@@ -3,7 +3,7 @@
 //! inventories, damage and grenades. Clients own their movement and aim.
 
 use std::collections::VecDeque;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{IpAddr, SocketAddr, UdpSocket};
 
 use bevy::math::Vec3;
 use bevy::prelude::*;
@@ -92,6 +92,13 @@ struct ServerFire {
     next_tick: f32,
 }
 
+struct ServerDrop {
+    gun: DroppedGun,
+    expires: f32,
+    /// The dropper can't instantly pick it back up.
+    blocked: Option<(PlayerId, f32)>,
+}
+
 #[derive(Resource)]
 pub struct GameServer {
     socket: UdpSocket,
@@ -100,6 +107,7 @@ pub struct GameServer {
     password: String,
     mode: GameMode,
     host_id: Option<PlayerId>,
+    friendly_fire: bool,
     players: Vec<ServerPlayer>,
     phase: Phase,
     phase_timer: f32,
@@ -113,6 +121,10 @@ pub struct GameServer {
     grenades: Vec<ServerGrenade>,
     fires: Vec<ServerFire>,
     smokes: Vec<(Vec3, f32)>,
+    dropped: Vec<ServerDrop>,
+    banned: Vec<IpAddr>,
+    /// Rounds needed to win; grows by 3 in overtime.
+    win_target: u32,
     time: f32,
     snapshot_timer: f32,
     snapshot_count: u64,
@@ -136,6 +148,7 @@ impl GameServer {
                         password,
                         mode,
                         host_id: None,
+                        friendly_fire: false,
                         players: Vec::new(),
                         phase: Phase::Lobby,
                         phase_timer: 0.0,
@@ -149,6 +162,9 @@ impl GameServer {
                         grenades: Vec::new(),
                         fires: Vec::new(),
                         smokes: Vec::new(),
+                        dropped: Vec::new(),
+                        banned: Vec::new(),
+                        win_target: 0,
                         time: 0.0,
                         snapshot_timer: 0.0,
                         snapshot_count: 0,
@@ -186,6 +202,7 @@ impl GameServer {
                 .find(|p| Some(p.id) == self.host_id)
                 .map(|p| p.name.clone())
                 .unwrap_or_default(),
+            friendly_fire: self.friendly_fire,
         }
     }
 
@@ -302,6 +319,9 @@ impl GameServer {
         let reject = |s: &Self, reason: &str| s.send(addr, &S2C::Rejected { reason: reason.into() });
         if version != PROTOCOL_VERSION {
             return reject(self, "Game version mismatch");
+        }
+        if self.banned.contains(&addr.ip()) {
+            return reject(self, "You are banned from this lobby");
         }
         if !self.password.is_empty() && password != self.password {
             return reject(self, "Wrong password");
@@ -454,6 +474,8 @@ impl GameServer {
             players,
             profiles,
             events: self.events.iter().map(|(id, _, e)| (*id, e.clone())).collect(),
+            dropped: self.dropped.iter().map(|d| d.gun.clone()).collect(),
+            win_target: self.win_target,
         };
         for p in &self.players {
             snap.your_id = p.id;
@@ -500,6 +522,42 @@ impl GameServer {
             Cmd::StartMatch => {
                 if is_host && self.phase == Phase::Lobby {
                     self.start_match();
+                }
+            }
+            Cmd::SetFriendlyFire(on) => {
+                if is_host && self.phase == Phase::Lobby {
+                    self.friendly_fire = on;
+                }
+            }
+            Cmd::Kick(target) => {
+                if is_host && target != id
+                    && let Some(k) = self.idx(target)
+                {
+                    let p = self.players.remove(k);
+                    self.send(p.addr, &S2C::Kicked { reason: "You were kicked by the host".into() });
+                    self.event(GameEvent::Info(format!("{} was kicked", p.name)));
+                    self.check_round_end();
+                }
+            }
+            Cmd::Ban(target) => {
+                if is_host && target != id
+                    && let Some(k) = self.idx(target)
+                {
+                    let p = self.players.remove(k);
+                    self.banned.push(p.addr.ip());
+                    self.send(p.addr, &S2C::Kicked { reason: "You were banned from this lobby".into() });
+                    self.event(GameEvent::Info(format!("{} was banned", p.name)));
+                    self.check_round_end();
+                }
+            }
+            Cmd::Drop(w) => {
+                if self.players[i].alive && self.phase != Phase::Lobby {
+                    self.drop_gun(i, w);
+                }
+            }
+            Cmd::FallDamage(dmg) => {
+                if self.players[i].alive && self.phase != Phase::Lobby {
+                    self.damage_player(id, id, dmg.clamp(0, 200), 0, false, DamageSource::Fall);
                 }
             }
             Cmd::EndMatch => {
@@ -611,6 +669,18 @@ impl GameServer {
         if p.money < price {
             return deny(self, "Not enough money");
         }
+        // Buying a gun drops the one in that slot, like in CS.
+        if let ShopItem::Weapon(w) = item {
+            let p = &self.players[i];
+            let old = match w.def().slot {
+                Slot::Primary => p.primary,
+                Slot::Secondary => p.secondary,
+                Slot::Melee => None,
+            };
+            if let Some(old) = old {
+                self.drop_gun(i, old);
+            }
+        }
         let p = &mut self.players[i];
         p.money -= price;
         match item {
@@ -629,8 +699,79 @@ impl GameServer {
         self.event(GameEvent::Bought { player: id, item });
     }
 
+    /// Takes `w` out of player `i`'s inventory and puts it on the ground in front of them.
+    fn drop_gun(&mut self, i: usize, w: WeaponId) {
+        let p = &mut self.players[i];
+        match w.def().slot {
+            Slot::Primary if p.primary == Some(w) => p.primary = None,
+            Slot::Secondary if p.secondary == Some(w) => p.secondary = None,
+            _ => return,
+        }
+        let feet = p.feet();
+        let owner = p.id;
+        let fwd = Vec3::new(-p.state.yaw.sin(), 0.0, -p.state.yaw.cos());
+        // Toss it a little forward, but never through a wall, then settle it on the ground.
+        let dist = raycast_map(feet + Vec3::Y * 0.5, fwd, 1.0).map(|d| (d - 0.3).max(0.0)).unwrap_or(1.0);
+        let mut pos = feet + fwd * dist;
+        let probe = pos + Vec3::new(0.001, 0.5, 0.001);
+        pos.y = raycast_map(probe, Vec3::NEG_Y, 20.0).map(|d| probe.y - d).unwrap_or(feet.y) + 0.04;
+        let id = self.next_object_id;
+        self.next_object_id += 1;
+        self.dropped.push(ServerDrop {
+            gun: DroppedGun {
+                id,
+                weapon: w,
+                pos: pos.to_array(),
+                yaw: fastrand::f32() * std::f32::consts::TAU,
+            },
+            expires: if self.mode.is_ffa() { self.time + 30.0 } else { f32::INFINITY },
+            blocked: Some((owner, self.time + 1.0)),
+        });
+        if self.dropped.len() > 40 {
+            self.dropped.remove(0);
+        }
+    }
+
+    /// Living players pick up guns they walk over if that slot is empty.
+    fn update_pickups(&mut self) {
+        let now = self.time;
+        self.dropped.retain(|d| d.expires > now);
+        for i in 0..self.players.len() {
+            let p = &self.players[i];
+            if !p.alive {
+                continue;
+            }
+            let feet = p.feet();
+            let found = self.dropped.iter().position(|d| {
+                let pos = Vec3::from(d.gun.pos);
+                let flat = Vec3::new(pos.x - feet.x, 0.0, pos.z - feet.z).length();
+                let free = match d.gun.weapon.def().slot {
+                    Slot::Primary => p.primary.is_none(),
+                    Slot::Secondary => p.secondary.is_none(),
+                    Slot::Melee => false,
+                };
+                let blocked = d.blocked.is_some_and(|(who, until)| who == p.id && now < until);
+                free && !blocked && flat < 1.0 && (pos.y - feet.y).abs() < 1.6
+            });
+            if let Some(k) = found {
+                let w = self.dropped.remove(k).gun.weapon;
+                let p = &mut self.players[i];
+                match w.def().slot {
+                    Slot::Primary => p.primary = Some(w),
+                    Slot::Secondary => p.secondary = Some(w),
+                    Slot::Melee => {}
+                }
+            }
+        }
+    }
+
     fn enemies(&self, a: usize, b: usize) -> bool {
         a != b && (self.mode.is_ffa() || self.players[a].team != self.players[b].team)
+    }
+
+    /// Whether `a` can hurt `b` (teammates only with friendly fire on).
+    fn can_damage(&self, a: usize, b: usize) -> bool {
+        a != b && (self.friendly_fire || self.enemies(a, b))
     }
 
     fn fire(&mut self, i: usize, weapon: WeaponId, origin: Vec3, dirs: Vec<V3>, heavy: bool) {
@@ -654,7 +795,7 @@ impl GameServer {
             let wall = raycast_map(origin, dir, range).unwrap_or(range);
             let mut best: Option<(f32, usize, HitGroup)> = None;
             for (j, v) in self.players.iter().enumerate() {
-                if !v.alive || !self.enemies(i, j) {
+                if !v.alive || !self.can_damage(i, j) {
                     continue;
                 }
                 if let Some((t, g)) = ray_player(origin, dir, v.feet(), v.state.crouch)
@@ -748,6 +889,12 @@ impl GameServer {
         if self.mode.is_ffa() {
             v.respawn_at = Some(self.time + FFA_RESPAWN_TIME);
         }
+        // Drop the gun in hand (or the best one) where we died.
+        let v = &self.players[vi];
+        let held = v.state.weapon.filter(|w| *w != WeaponId::Knife && v.owns(*w));
+        if let Some(w) = held.or(v.primary).or(v.secondary) {
+            self.drop_gun(vi, w);
+        }
         if let Some(ai) = self.idx(attacker)
             && ai != vi
         {
@@ -760,8 +907,12 @@ impl GameServer {
                 let reward = match source {
                     DamageSource::Weapon(w) => w.def().kill_reward,
                     DamageSource::Grenade(_) => 300,
+                    DamageSource::Fall => 0,
                 };
                 a.money = (a.money + reward).min(economy::MAX_MONEY);
+            } else {
+                // Team kill penalty, like CS.
+                a.money = a.money.saturating_sub(300);
             }
         }
         self.event(GameEvent::Kill {
@@ -798,6 +949,8 @@ impl GameServer {
         self.loss_streak = [0, 0];
         self.round = 0;
         self.match_over_after_round = false;
+        self.win_target = self.mode.rounds_to_win();
+        self.dropped.clear();
         self.event(GameEvent::Info(format!("Match started: {}", self.mode.name())));
         if self.mode.is_ffa() {
             self.phase = Phase::Live;
@@ -821,6 +974,7 @@ impl GameServer {
         self.grenades.clear();
         self.fires.clear();
         self.smokes.clear();
+        self.dropped.clear();
         for k in 0..self.players.len() {
             self.spawn(k);
         }
@@ -920,10 +1074,13 @@ impl GameServer {
             }
         }
         self.event(GameEvent::RoundEnd { winner, reason });
-        let need = self.mode.rounds_to_win();
-        let max_rounds = need * 2 - 2;
-        if self.score.iter().any(|s| *s >= need) || self.round >= max_rounds {
+        let target = self.win_target;
+        if self.score.iter().any(|s| *s >= target) {
             self.match_over_after_round = true;
+        } else if self.score == [target - 1, target - 1] {
+            // Tied going into what would be the last round: overtime, first to 4 more.
+            self.win_target += 3;
+            self.event(GameEvent::Info(format!("Overtime! First to {} rounds wins", self.win_target)));
         }
     }
 
@@ -956,6 +1113,7 @@ impl GameServer {
         self.grenades.clear();
         self.fires.clear();
         self.smokes.clear();
+        self.dropped.clear();
         for p in &mut self.players {
             p.alive = false;
         }
@@ -1006,6 +1164,7 @@ impl GameServer {
         if self.phase != Phase::Lobby {
             self.update_grenades(dt);
             self.update_fires();
+            self.update_pickups();
         }
     }
 
@@ -1071,7 +1230,7 @@ impl GameServer {
                     if !v.alive {
                         continue;
                     }
-                    let friendly = owner_idx.is_some_and(|o| o != j && !self.enemies(o, j));
+                    let friendly = owner_idx.is_some_and(|o| o != j && !self.can_damage(o, j));
                     if friendly {
                         continue;
                     }
@@ -1143,7 +1302,7 @@ impl GameServer {
                     continue;
                 }
                 let friendly = owner_idx[fi].is_some_and(|o| {
-                    o != j && !(self.mode.is_ffa() || self.players[o].team != v.team)
+                    o != j && !(self.friendly_fire || self.mode.is_ffa() || self.players[o].team != v.team)
                 });
                 if friendly {
                     continue;

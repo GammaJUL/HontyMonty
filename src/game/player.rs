@@ -13,7 +13,8 @@ use crate::audio::{PlaySfx, Sound};
 use crate::game_mode::Phase;
 use crate::keybinds::{Action, Controls};
 use crate::map::{self, collides, CROUCH_EYE, CROUCH_HEIGHT, STAND_EYE, STAND_HEIGHT};
-use crate::net::protocol::{ClientState, PlayerId};
+use crate::net::protocol::{ClientState, Cmd, PlayerId};
+use crate::weapons::fall_damage;
 use crate::net::NetClient;
 use crate::settings::Settings;
 use crate::states::AppState;
@@ -90,6 +91,7 @@ fn spawn_local_player(mut commands: Commands, settings: Res<Settings>) {
         .with_children(|p| {
             p.spawn((
                 PlayerCamera,
+                SpatialListener::new(0.3),
                 Camera3d::default(),
                 Camera {
                     clear_color: ClearColorConfig::Custom(Color::srgb(0.53, 0.68, 0.86)),
@@ -153,11 +155,12 @@ fn look(
 fn movement(
     time: Res<Time>,
     controls: Controls,
-    client: Option<Res<NetClient>>,
+    mut client: Option<ResMut<NetClient>>,
     ui: Res<GameUi>,
     open: Res<SettingsOpen>,
     arsenal: Res<Arsenal>,
-    mut q: Query<(&mut LocalPlayer, &mut Transform)>,
+    mut q: Query<(&mut LocalPlayer, &mut Transform), Without<RemotePlayer>>,
+    remotes: Query<(&RemotePlayer, &Transform)>,
     mut sfx: MessageWriter<PlaySfx>,
 ) {
     let Ok((mut p, mut t)) = q.single_mut() else { return };
@@ -242,8 +245,16 @@ fn movement(
     p.vel.y = p.vel.y.max(-40.0);
 
     let height = p.height();
-    let result = map::move_player(t.translation, p.vel, height, dt, p.on_ground);
+    let others: Vec<map::Aabb> = remotes.iter().filter_map(|(rp, rt)| rp.collider(rt.translation)).collect();
+    let impact_speed = -p.vel.y;
+    let result = map::move_player(t.translation, p.vel, height, dt, p.on_ground, &others);
     let landed = !p.on_ground && result.on_ground;
+    let fall = if landed { fall_damage(impact_speed) } else { 0 };
+    if fall > 0
+        && let Some(c) = client.as_mut()
+    {
+        c.send_cmd(Cmd::FallDamage(fall));
+    }
     t.translation = result.pos;
     p.vel = result.vel;
     p.on_ground = result.on_ground;

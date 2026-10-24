@@ -14,7 +14,7 @@ use crate::game_mode::{GameMode, Phase, Team};
 use crate::profile::{Appearance, EquippedSkin};
 use crate::weapons::{DamageSource, GrenadeKind, ShopItem, WeaponId};
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 4;
 pub const DEFAULT_PORT: u16 = 27015;
 /// Ports scanned by the lobby browser.
 pub const PORT_RANGE: std::ops::Range<u16> = 27015..27020;
@@ -32,6 +32,8 @@ pub struct LobbyInfo {
     pub max_players: usize,
     pub in_game: bool,
     pub host: String,
+    #[serde(default)]
+    pub friendly_fire: bool,
 }
 
 /// Reliable commands from a client.
@@ -58,6 +60,16 @@ pub enum Cmd {
         origin: V3,
         vel: V3,
     },
+    /// Host only.
+    SetFriendlyFire(bool),
+    /// Host only: remove a player from the lobby.
+    Kick(PlayerId),
+    /// Host only: kick and refuse future joins from that address.
+    Ban(PlayerId),
+    /// Throw a primary or secondary on the ground.
+    Drop(WeaponId),
+    /// Landing damage the client measured (server clamps it).
+    FallDamage(i32),
     Chat(String),
     /// Only shown to the sender's team.
     TeamChat(String),
@@ -211,6 +223,15 @@ pub struct NetProfile {
     pub skins: Vec<EquippedSkin>,
 }
 
+/// A gun lying on the ground; walk over it with an empty slot to pick it up.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DroppedGun {
+    pub id: u32,
+    pub weapon: WeaponId,
+    pub pos: V3,
+    pub yaw: f32,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
     pub your_id: PlayerId,
@@ -229,6 +250,11 @@ pub struct Snapshot {
     pub players: Vec<NetPlayer>,
     pub profiles: Option<Vec<NetProfile>>,
     pub events: Vec<(u32, GameEvent)>,
+    #[serde(default)]
+    pub dropped: Vec<DroppedGun>,
+    /// Rounds needed to win (grows in overtime).
+    #[serde(default)]
+    pub win_target: u32,
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> Vec<u8> {

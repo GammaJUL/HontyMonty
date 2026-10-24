@@ -1,6 +1,8 @@
 //! In-game HUD: crosshair, vitals, ammo, timer/score, kill feed, messages,
 //! scope/flash/damage overlays and the scoreboard.
 
+use std::collections::HashMap;
+
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
@@ -11,6 +13,7 @@ use super::player::LocalPlayer;
 use super::{GameSet, GameUi, InGameEntity};
 use crate::game_mode::{Phase, Team, FFA_KILL_LIMIT};
 use crate::keybinds::{Action, Controls};
+use crate::net::protocol::PlayerId;
 use crate::net::NetClient;
 use crate::settings::Settings;
 use crate::states::AppState;
@@ -31,6 +34,13 @@ pub struct HudFeed {
     center: Option<(String, f32)>,
     pub killed_by: Option<String>,
     now: f32,
+    /// Damage I dealt / took this life, per player: (damage, hits).
+    dealt: HashMap<PlayerId, (i32, u32)>,
+    taken: HashMap<PlayerId, (i32, u32)>,
+    was_alive: bool,
+    last_money: Option<u32>,
+    /// (change, shown until)
+    money_delta: Option<(i64, f32)>,
 }
 
 impl HudFeed {
@@ -46,6 +56,37 @@ impl HudFeed {
             self.infos.remove(0);
         }
     }
+    pub fn record_hit(&mut self, me: Option<PlayerId>, attacker: PlayerId, victim: PlayerId, damage: i32) {
+        let add = |m: &mut HashMap<PlayerId, (i32, u32)>, id: PlayerId| {
+            let e = m.entry(id).or_default();
+            // Nobody has more than 100 HP to lose.
+            e.0 = (e.0 + damage).min(100);
+            e.1 += 1;
+        };
+        if Some(attacker) == me && Some(victim) != me {
+            add(&mut self.dealt, victim);
+        }
+        if Some(victim) == me && Some(attacker) != me {
+            add(&mut self.taken, attacker);
+        }
+    }
+
+    fn damage_report(&self, client: &NetClient) -> String {
+        let line = |title: &str, m: &HashMap<PlayerId, (i32, u32)>| {
+            let parts: Vec<String> = m
+                .iter()
+                .map(|(id, (dmg, hits))| {
+                    let name = client.player(*id).map(|p| p.name.as_str()).unwrap_or("?");
+                    let s = if *hits == 1 { "" } else { "s" };
+                    format!("{name} {dmg} ({hits} hit{s})")
+                })
+                .collect();
+            if parts.is_empty() { format!("{title}: -") } else { format!("{title}: {}", parts.join(", ")) }
+        };
+        format!("{}
+{}", line("Damage dealt", &self.dealt), line("Damage taken", &self.taken))
+    }
+
     pub fn chat(&mut self, text: String) {
         self.chat.push((text, self.now));
         if self.chat.len() > MAX_CHAT_LINES {
@@ -67,6 +108,7 @@ struct ScopeImages {
 #[derive(Component)]
 enum HudText {
     Top,
+    MoneyDelta,
     Chat,
     Vitals,
     Money,
@@ -257,6 +299,7 @@ fn spawn_hud(mut commands: Commands, scopes: Res<ScopeImages>, mut feed: ResMut<
             }))
             .insert(TextLayout::justify(Justify::Center));
             root.spawn(text(HudText::Vitals, 30.0, abs(px(24), Val::Auto, Val::Auto, px(20))));
+            root.spawn(text(HudText::MoneyDelta, 22.0, abs(px(24), Val::Auto, Val::Auto, px(96))));
             root.spawn(text(HudText::Money, 26.0, abs(px(24), Val::Auto, Val::Auto, px(62))))
                 .insert(TextColor(Color::srgb(0.5, 1.0, 0.5)));
             root.spawn(text(HudText::Ammo, 34.0, abs(Val::Auto, Val::Auto, px(24), px(20))));
@@ -311,7 +354,8 @@ fn update_texts(
     controls: Controls,
     spectate: Res<super::player::Spectate>,
     ui: Res<GameUi>,
-    mut q: Query<(&HudText, &mut Text)>,
+    profile: Res<crate::profile::Profile>,
+    mut q: Query<(&HudText, &mut Text, &mut TextColor)>,
 ) {
     feed.now = time.elapsed_secs();
     let now = feed.now;
@@ -325,8 +369,20 @@ fn update_texts(
     let Some(me) = c.me() else { return };
     let ffa = snap.lobby.mode.is_ffa();
     let buy_key = controls.binding_name(Action::BuyMenu);
+    // New life: start a fresh damage report.
+    if me.alive && !feed.was_alive {
+        feed.dealt.clear();
+        feed.taken.clear();
+    }
+    feed.was_alive = me.alive;
+    if let Some(last) = feed.last_money
+        && last != me.money
+    {
+        feed.money_delta = Some((me.money as i64 - last as i64, now + 2.0));
+    }
+    feed.last_money = Some(me.money);
 
-    for (kind, mut t) in &mut q {
+    for (kind, mut t, mut color) in &mut q {
         let s = match kind {
             HudText::Top => {
                 let clock = match snap.phase {
@@ -351,7 +407,7 @@ fn update_texts(
                         snap.score[0],
                         snap.score[1],
                         alive(Team::Alpha),
-                        snap.lobby.mode.rounds_to_win(),
+                        if snap.win_target > 0 { snap.win_target } else { snap.lobby.mode.rounds_to_win() },
                         alive(Team::Bravo)
                     )
                 }
@@ -361,6 +417,13 @@ fn update_texts(
                 format!("HP {}    AP {}{}", me.health, me.armor, helmet)
             }
             HudText::Money => format!("$ {}", me.money),
+            HudText::MoneyDelta => match feed.money_delta {
+                Some((d, until)) if until > now => {
+                    color.0 = if d > 0 { Color::srgb(0.45, 1.0, 0.45) } else { Color::srgb(1.0, 0.45, 0.4) };
+                    if d > 0 { format!("+$ {d}") } else { format!("-$ {}", -d) }
+                }
+                _ => String::new(),
+            },
             HudText::Ammo => match arsenal.held {
                 Held::Weapon(WeaponId::Knife) | Held::Grenade(_) => String::new(),
                 Held::Weapon(w) => {
@@ -369,7 +432,11 @@ fn update_texts(
                 }
             },
             HudText::Weapon => match arsenal.held {
-                Held::Weapon(w) => w.def().name.to_string(),
+                Held::Weapon(w) => match profile.equipped_skin(w) {
+                    Some(s) if s.stattrak => format!("{}  [StatTrak: {}]", s.def().full_name(), s.kills),
+                    Some(s) => s.def().full_name(),
+                    None => w.def().name.to_string(),
+                },
                 Held::Grenade(g) => g.name().to_string(),
             },
             HudText::Grenades => arsenal
@@ -399,7 +466,12 @@ fn update_texts(
             HudText::Center => feed.center.as_ref().map(|c| c.0.clone()).unwrap_or_default(),
             HudText::Bottom => {
                 if !me.alive && snap.phase != Phase::Lobby {
-                    let reason = feed.killed_by.clone().unwrap_or_else(|| "You are dead".into());
+                    let reason = format!(
+                        "{}
+{}",
+                        feed.killed_by.clone().unwrap_or_else(|| "You are dead".into()),
+                        feed.damage_report(&c)
+                    );
                     let wait = if ffa { "Respawning soon..." } else { "Waiting for the next round..." };
                     match spectate.target.and_then(|id| c.player(id)) {
                         Some(t) => format!(

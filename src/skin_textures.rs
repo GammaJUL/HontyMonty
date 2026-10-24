@@ -9,21 +9,25 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use crate::cases::{Pattern, SkinDef, Wear};
 
 const SIZE: u32 = 64;
+const PATTERN_VARIANTS: u16 = 8;
 
 #[derive(Resource, Default)]
 pub struct SkinTextures {
-    cache: HashMap<(u16, u8), Handle<Image>>,
+    /// (skin, wear bracket, pattern variant)
+    cache: HashMap<(u16, u8, u8), Handle<Image>>,
 }
 
 impl SkinTextures {
-    pub fn get(&mut self, images: &mut Assets<Image>, def: &SkinDef, float: f32) -> Handle<Image> {
+    /// The pattern seed picks one of `PATTERN_VARIANTS` looks (fade position, camo layout...).
+    pub fn get(&mut self, images: &mut Assets<Image>, def: &SkinDef, float: f32, pattern_seed: u16) -> Handle<Image> {
+        let variant = (pattern_seed % PATTERN_VARIANTS) as u8;
         let wear = Wear::ALL
             .iter()
             .position(|w| *w == Wear::from_float(float))
             .unwrap_or(0) as u8;
         self.cache
-            .entry((def.id, wear))
-            .or_insert_with(|| images.add(render(def, wear)))
+            .entry((def.id, wear, variant))
+            .or_insert_with(|| images.add(render(def, wear, variant)))
             .clone()
     }
 }
@@ -49,15 +53,16 @@ fn value_noise(u: f32, v: f32, scale: f32, seed: u32) -> f32 {
     a + (b - a) * sy
 }
 
-fn pattern_mix(p: Pattern, u: f32, v: f32, seed: u32) -> f32 {
+/// `shift` (0..1) comes from the pattern seed and moves gradients and stripes around.
+fn pattern_mix(p: Pattern, u: f32, v: f32, seed: u32, shift: f32) -> f32 {
     match p {
         Pattern::Solid => 0.0,
-        Pattern::Stripes => ((((u + v) * 5.0).fract()) < 0.35) as u8 as f32,
+        Pattern::Stripes => ((((u + v) * 5.0 + shift).fract()) < 0.35) as u8 as f32,
         Pattern::Camo => {
             let n = value_noise(u, v, 4.0, seed) * 0.65 + value_noise(u, v, 8.0, seed + 1) * 0.35;
             (n > 0.52) as u8 as f32
         }
-        Pattern::Fade => (u * 0.6 + v * 0.4).clamp(0.0, 1.0),
+        Pattern::Fade => (u * 0.6 + v * 0.4 + shift * 0.6 - 0.3).clamp(0.0, 1.0),
         Pattern::Web => {
             let (dx, dy) = (u - 0.5, v - 0.5);
             let r = (dx * dx + dy * dy).sqrt();
@@ -90,8 +95,9 @@ fn pattern_mix(p: Pattern, u: f32, v: f32, seed: u32) -> f32 {
     }
 }
 
-fn render(def: &SkinDef, wear_index: u8) -> Image {
-    let seed = def.id as u32 * 31 + 7;
+fn render(def: &SkinDef, wear_index: u8, variant: u8) -> Image {
+    let seed = def.id as u32 * 31 + 7 + variant as u32 * 1013;
+    let shift = variant as f32 / PATTERN_VARIANTS as f32;
     // More scratches the further down the wear scale.
     let scratch = [0.0, 0.03, 0.08, 0.14, 0.22][wear_index as usize];
     let mut data = Vec::with_capacity((SIZE * SIZE * 4) as usize);
@@ -99,7 +105,7 @@ fn render(def: &SkinDef, wear_index: u8) -> Image {
         for x in 0..SIZE {
             let u = x as f32 / SIZE as f32;
             let v = y as f32 / SIZE as f32;
-            let t = pattern_mix(def.pattern, u, v, seed);
+            let t = pattern_mix(def.pattern, u, v, seed, shift);
             let mut c = [0.0f32; 3];
             for i in 0..3 {
                 c[i] = def.primary[i] + (def.secondary[i] - def.primary[i]) * t;

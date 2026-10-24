@@ -229,7 +229,24 @@ pub struct MoveResult {
 }
 
 /// Kinematic move-and-slide against the map with stair stepping.
-pub fn move_player(mut pos: Vec3, mut vel: Vec3, height: f32, dt: f32, was_on_ground: bool) -> MoveResult {
+/// `others` are extra solid boxes (other players). Ones we already overlap are ignored so
+/// nobody gets stuck inside each other.
+pub fn move_player(
+    mut pos: Vec3,
+    mut vel: Vec3,
+    height: f32,
+    dt: f32,
+    was_on_ground: bool,
+    others: &[Aabb],
+) -> MoveResult {
+    let start = player_aabb(pos, height);
+    let others: Vec<Aabb> = others.iter().filter(|o| !o.overlaps(&start)).copied().collect();
+    let blocked = |feet: Vec3| {
+        collides(feet, height) || {
+            let a = player_aabb(feet, height);
+            others.iter().any(|o| o.overlaps(&a))
+        }
+    };
     let steps = ((dt / (1.0 / 120.0)).ceil() as usize).clamp(1, 16);
     let sdt = dt / steps as f32;
     let mut on_ground = false;
@@ -241,19 +258,19 @@ pub fn move_player(mut pos: Vec3, mut vel: Vec3, height: f32, dt: f32, was_on_gr
             }
             let mut next = pos;
             next[axis] += delta;
-            if !collides(next, height) {
+            if !blocked(next) {
                 pos = next;
                 continue;
             }
             let mut stepped = next;
             stepped.y += STEP_HEIGHT;
-            if (was_on_ground || on_ground) && !collides(stepped, height) {
+            if (was_on_ground || on_ground) && !blocked(stepped) {
                 // Settle down onto the step.
                 let mut settle = stepped;
                 for _ in 0..10 {
                     let mut lower = settle;
                     lower.y -= STEP_HEIGHT / 10.0;
-                    if collides(lower, height) {
+                    if blocked(lower) {
                         break;
                     }
                     settle = lower;
@@ -265,7 +282,7 @@ pub fn move_player(mut pos: Vec3, mut vel: Vec3, height: f32, dt: f32, was_on_gr
         }
         let mut next = pos;
         next.y += vel.y * sdt;
-        if collides(next, height) {
+        if blocked(next) {
             if vel.y < 0.0 {
                 on_ground = true;
                 // Snap to the top of whatever we landed on.
@@ -275,6 +292,7 @@ pub fn move_player(mut pos: Vec3, mut vel: Vec3, height: f32, dt: f32, was_on_gr
                     .iter()
                     .filter(|b| b.aabb.overlaps(&a))
                     .map(|b| b.aabb.max.y)
+                    .chain(others.iter().filter(|o| o.overlaps(&a)).map(|o| o.max.y))
                     .fold(f32::MIN, f32::max);
                 if top <= pos.y + 0.001 {
                     pos.y = top;
@@ -286,7 +304,7 @@ pub fn move_player(mut pos: Vec3, mut vel: Vec3, height: f32, dt: f32, was_on_gr
         }
     }
     if !on_ground {
-        on_ground = collides(pos - Vec3::Y * 0.02, height);
+        on_ground = blocked(pos - Vec3::Y * 0.02);
     }
     MoveResult { pos, vel, on_ground }
 }

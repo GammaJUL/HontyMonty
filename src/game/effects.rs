@@ -7,9 +7,11 @@ use super::hud::HudFeed;
 use super::player::{LocalPlayer, PlayerCamera};
 use super::{GameSet, InGameEntity};
 use crate::audio::{PlaySfx, Sound};
-use crate::map::{line_of_sight, step_grenade};
+use super::remote::RemotePlayer;
+use crate::map::{line_of_sight, raycast_map, step_grenade};
 use crate::net::protocol::GameEvent;
 use crate::net::{NetClient, NetEvent};
+use crate::profile::Profile;
 use crate::settings::Settings;
 use crate::weapon_model::spawn_grenade_model;
 use crate::weapons::*;
@@ -138,7 +140,8 @@ pub fn plugin(app: &mut App) {
                 c.insert_resource(ActiveSmokes::default());
             },
         )
-        .add_systems(Update, handle_events.in_set(GameSet::Simulate))
+        .add_systems(Startup, make_particle_assets)
+        .add_systems(Update, (handle_events, stattrak_counter, event_particles).in_set(GameSet::Simulate))
         .add_systems(
             Update,
             (
@@ -147,6 +150,7 @@ pub fn plugin(app: &mut App) {
                 simulate_grenades,
                 animate_smoke,
                 track_smokes,
+                animate_particles,
                 animate_fire,
                 animate_expand,
                 decay_screen,
@@ -157,6 +161,21 @@ pub fn plugin(app: &mut App) {
 
 pub fn spawn_tracer(commands: &mut Commands, from: Vec3, to: Vec3, mine: bool) {
     commands.spawn((InGameEntity, Tracer { from, to, ttl: 0.06, mine }));
+}
+
+/// A brief flash of light where a gun was fired.
+pub fn spawn_muzzle_flash(commands: &mut Commands, pos: Vec3) {
+    commands.spawn((
+        InGameEntity,
+        Lifetime(0.05),
+        PointLight {
+            intensity: 150_000.0,
+            color: Color::srgb(1.0, 0.8, 0.45),
+            range: 6.0,
+            ..default()
+        },
+        Transform::from_translation(pos),
+    ));
 }
 
 pub fn spawn_impact(
@@ -257,6 +276,30 @@ fn spawn_smoke(commands: &mut Commands, meshes: &mut Assets<Mesh>, mats: &mut As
             MeshMaterial3d(mat),
             Transform::from_translation(pos + offset).with_scale(Vec3::splat(0.01)),
         ));
+    }
+}
+
+/// Counts kills on the equipped StatTrak skin of the weapon used.
+fn stattrak_counter(
+    mut events: MessageReader<NetEvent>,
+    client: Option<Res<NetClient>>,
+    mut profile: ResMut<Profile>,
+) {
+    let me = client.as_ref().and_then(|c| c.my_id);
+    let mut changed = false;
+    for NetEvent(e) in events.read() {
+        let GameEvent::Kill { killer, victim, source: DamageSource::Weapon(w), .. } = e else { continue };
+        if Some(*killer) != me || killer == victim {
+            continue;
+        }
+        let Some(uid) = profile.equipped.get(w).copied() else { continue };
+        if let Some(item) = profile.inventory.iter_mut().find(|s| s.uid == uid && s.stattrak) {
+            item.kills += 1;
+            changed = true;
+        }
+    }
+    if changed {
+        profile.save();
     }
 }
 
@@ -477,9 +520,11 @@ fn handle_events(
                 }
                 let from = Vec3::from(from);
                 spawn_tracer(&mut commands, from, Vec3::from(to), false);
-                sfx.write(PlaySfx::fx(Sound::Shot(weapon.def().class), 0.8 * dist_vol(from)));
+                sfx.write(PlaySfx::fx_at(Sound::Shot(weapon.def().class), 0.8 * dist_vol(from), from));
+                spawn_muzzle_flash(&mut commands, from);
             }
             GameEvent::Hit { attacker, victim, damage, headshot } => {
+                feed.record_hit(me, attacker, victim, damage);
                 if Some(attacker) == me && Some(victim) != me {
                     fx.hitmarker = 1.0;
                     fx.hit_head = headshot;
@@ -499,7 +544,9 @@ fn handle_events(
                 let killer_name = name_of(&c, killer);
                 let victim_name = name_of(&c, victim);
                 let involved = Some(killer) == me || Some(victim) == me;
-                let text = if killer == victim {
+                let text = if source == DamageSource::Fall {
+                    format!("{victim_name} fell to their death")
+                } else if killer == victim {
                     format!("{victim_name} [{}] (suicide)", source.name())
                 } else {
                     format!(
@@ -513,7 +560,9 @@ fn handle_events(
                     sfx.write(PlaySfx::fx(Sound::Kill, 0.6));
                 }
                 if Some(victim) == me {
-                    feed.killed_by = Some(if killer == victim {
+                    feed.killed_by = Some(if source == DamageSource::Fall {
+                        "You fell to your death".to_string()
+                    } else if killer == victim {
                         format!("You killed yourself with a {}", source.name())
                     } else {
                         format!(
@@ -548,7 +597,7 @@ fn handle_events(
                 match kind {
                     GrenadeKind::He => {
                         spawn_flash_sphere(&mut commands, &mut meshes, &mut mats, pos, LinearRgba::rgb(20.0, 8.0, 2.0), 4.0, 0.45);
-                        sfx.write(PlaySfx::fx(Sound::Explosion, vol));
+                        sfx.write(PlaySfx::fx_at(Sound::Explosion, vol, pos));
                         let d = pos.distance(my_pos);
                         if d < 15.0 {
                             fx.shake = (fx.shake + (1.0 - d / 15.0)).min(1.5);
@@ -556,7 +605,7 @@ fn handle_events(
                     }
                     GrenadeKind::Flash => {
                         spawn_flash_sphere(&mut commands, &mut meshes, &mut mats, pos, LinearRgba::rgb(40.0, 40.0, 40.0), 1.5, 0.15);
-                        sfx.write(PlaySfx::fx(Sound::Flash, vol));
+                        sfx.write(PlaySfx::fx_at(Sound::Flash, vol, pos));
                         if let (Some(cam), Ok((p, _))) = (cam, me_q.single())
                             && p.alive
                         {
@@ -578,11 +627,11 @@ fn handle_events(
                     }
                     GrenadeKind::Smoke => {
                         spawn_smoke(&mut commands, &mut meshes, &mut mats, pos);
-                        sfx.write(PlaySfx::fx(Sound::Smoke, vol));
+                        sfx.write(PlaySfx::fx_at(Sound::Smoke, vol, pos));
                     }
                     GrenadeKind::Molotov => {
                         spawn_fire(&mut commands, &mut meshes, &mut mats, id, pos);
-                        sfx.write(PlaySfx::fx(Sound::Fire, vol));
+                        sfx.write(PlaySfx::fx_at(Sound::Fire, vol, pos));
                     }
                 }
             }
@@ -640,6 +689,118 @@ fn handle_events(
                 }
             }
             GameEvent::Info(text) => feed.info(text),
+        }
+    }
+}
+
+// ---------------------------------------------------------------- particles
+
+/// Shared meshes/materials for small, frequent particles.
+#[derive(Resource)]
+pub struct ParticleAssets {
+    casing_mesh: Handle<Mesh>,
+    casing_mat: Handle<StandardMaterial>,
+    blood_mesh: Handle<Mesh>,
+    blood_mat: Handle<StandardMaterial>,
+}
+
+#[derive(Component)]
+struct Particle {
+    vel: Vec3,
+    spin: f32,
+}
+
+fn make_particle_assets(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+) {
+    commands.insert_resource(ParticleAssets {
+        casing_mesh: meshes.add(Cuboid::new(0.012, 0.012, 0.035)),
+        casing_mat: mats.add(StandardMaterial {
+            base_color: Color::srgb(0.85, 0.65, 0.25),
+            metallic: 0.9,
+            perceptual_roughness: 0.3,
+            ..default()
+        }),
+        blood_mesh: meshes.add(Cuboid::new(0.04, 0.04, 0.04)),
+        blood_mat: mats.add(StandardMaterial {
+            base_color: Color::srgb(0.55, 0.0, 0.02),
+            perceptual_roughness: 0.6,
+            ..default()
+        }),
+    });
+}
+
+/// A spent shell flying out of the gun's ejection port.
+pub fn spawn_casing(commands: &mut Commands, assets: &ParticleAssets, pos: Vec3, vel: Vec3) {
+    commands.spawn((
+        InGameEntity,
+        Particle { vel, spin: 25.0 },
+        Lifetime(1.5),
+        Mesh3d(assets.casing_mesh.clone()),
+        MeshMaterial3d(assets.casing_mat.clone()),
+        Transform::from_translation(pos),
+    ));
+}
+
+fn spawn_blood(commands: &mut Commands, assets: &ParticleAssets, pos: Vec3, amount: usize) {
+    for _ in 0..amount {
+        let dir = Vec3::new(fastrand::f32() - 0.5, fastrand::f32() * 0.8, fastrand::f32() - 0.5);
+        commands.spawn((
+            InGameEntity,
+            Particle { vel: dir * 3.0, spin: 0.0 },
+            Lifetime(0.5 + fastrand::f32() * 0.3),
+            Mesh3d(assets.blood_mesh.clone()),
+            MeshMaterial3d(assets.blood_mat.clone()),
+            Transform::from_translation(pos).with_scale(Vec3::splat(0.5 + fastrand::f32())),
+        ));
+    }
+}
+
+fn animate_particles(time: Res<Time>, mut q: Query<(&mut Particle, &mut Transform)>) {
+    let dt = time.delta_secs();
+    for (mut p, mut t) in &mut q {
+        if p.vel == Vec3::ZERO {
+            continue;
+        }
+        p.vel.y -= 9.8 * dt;
+        let step = p.vel * dt;
+        let len = step.length();
+        // Stop on whatever we hit.
+        if len > 0.0 && raycast_map(t.translation, step / len, len).is_some() {
+            p.vel = Vec3::ZERO;
+            continue;
+        }
+        t.translation += step;
+        let spin = p.spin * dt;
+        t.rotate_x(spin);
+    }
+}
+
+/// Casings for other players' shots and blood where players get hit.
+fn event_particles(
+    mut commands: Commands,
+    mut events: MessageReader<NetEvent>,
+    client: Option<Res<NetClient>>,
+    remotes: Query<(&RemotePlayer, &Transform)>,
+    assets: Res<ParticleAssets>,
+) {
+    let me = client.as_ref().and_then(|c| c.my_id);
+    for NetEvent(e) in events.read() {
+        match e {
+            GameEvent::Shot { shooter, from, .. } if Some(*shooter) != me => {
+                let side = Vec3::new(fastrand::f32() - 0.5, 0.0, fastrand::f32() - 0.5).normalize_or_zero();
+                spawn_casing(&mut commands, &assets, Vec3::from(*from), side * 2.0 + Vec3::Y * 1.5);
+            }
+            GameEvent::Hit { victim, headshot, damage, .. } if Some(*victim) != me => {
+                if let Some((_, t)) = remotes.iter().find(|(rp, _)| rp.id == *victim) {
+                    let height = if *headshot { 1.65 } else { 1.15 };
+                    let amount = (*damage as usize / 10).clamp(3, 12);
+                    spawn_blood(&mut commands, &assets, t.translation + Vec3::Y * height, amount);
+                }
+            }
+            _ => {}
         }
     }
 }

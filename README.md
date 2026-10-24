@@ -55,6 +55,8 @@ You can test locally by starting the game twice on one PC.
 | Chat (all / team) | Y / U |
 | Knife: slash / heavy stab | Mouse 1 / Mouse 2 |
 | Spectate next / previous (when dead) | Mouse 1 / Mouse 2 |
+| Inspect weapon | F |
+| Drop weapon (walk over guns to pick them up) | G |
 | Pause menu | Esc |
 
 ## Code layout

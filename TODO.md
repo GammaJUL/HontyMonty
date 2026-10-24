@@ -6,19 +6,19 @@ Ideas and known gaps, roughly ordered by impact. Tick items off as they land.
 - [ ] Bots (fill empty slots, practice offline)
 - [x] Spectator camera when dead (cycle through alive teammates)
 - [ ] Bomb plant/defuse objective mode (Alpha attacks, Bravo defends) + side swap at half-time
-- [ ] Drop / pick up weapons (G key), dropped guns on death
+- [x] Drop / pick up weapons (G key), dropped guns on death, buying drops your old gun
 - [ ] Wallbangs (penetration through thin walls / crates with damage falloff)
-- [ ] Real spray patterns per weapon instead of the generic climb + sway
+- [x] Real spray patterns per weapon (AK, M4/AUG/SG, SMGs)
 - [x] Knife right-click heavy stab and backstab damage
-- [ ] Player-vs-player collision
-- [ ] Fall damage
+- [x] Player-vs-player collision
+- [x] Fall damage
 - [ ] Defuse kit, Zeus, decoy and incendiary (team variants of molotov)
-- [ ] Friendly-fire toggle in lobby settings
-- [ ] Overtime rules for tied team matches
+- [x] Friendly-fire toggle in lobby settings (team kills cost $300)
+- [x] Overtime for tied team matches (first to 4 more)
 - [x] Smoke blocks flashbangs and hides name tags (client side)
 - [x] Gray screen fog while standing inside a smoke, fading towards the edge
 - [x] Footstep sounds for other players (volume by distance; walking/crouching is silent)
-- [ ] Left/right panning for footsteps and shots
+- [x] Left/right panning for footsteps, shots and grenades
 
 ## Maps
 - [ ] More maps + map vote in the lobby
@@ -33,40 +33,49 @@ Ideas and known gaps, roughly ordered by impact. Tick items off as they land.
 - [x] Ping display on the scoreboard
 - [x] Text chat (Y = all, U = team)
 - [ ] Host migration when the host leaves
-- [ ] Kick / ban for the host, lobby max-players setting
+- [x] Kick button for the host
+- [x] Ban button for the host (by IP, for the lobby's lifetime)
+- [ ] Lobby max-players setting, unban
 
 ## Cases & inventory
 - [ ] More cases, each with its own collection
 - [ ] Gloves as rare special items
 - [ ] Trade-up contract (10 items -> 1 of the next rarity)
 - [ ] Inspect view (3D weapon preview rotating in the inventory)
-- [ ] StatTrak kill counters that count up in matches
-- [ ] Pattern seeds affecting the texture (e.g. Fade %, Doppler phases)
-- [ ] Sort / filter inventory, delete items
-- [ ] Wear visibly affects the in-game material (roughness, scratches)
+- [x] StatTrak kill counters that count up in matches
+- [x] Pattern seeds affecting the texture (8 variants per skin)
+- [x] Filter inventory by rarity, delete items
+- [x] Wear visibly affects the in-game material (roughness, scratches)
+
+- [x] Weapon inspect (F)
+- [x] Money popups (+$300 / -$2700) and a damage report when you die
 
 ## Character
-- [ ] More hairstyles, facial hair, glasses/hats, body types
+- [x] Facial hair, glasses/sunglasses, caps, beanies, headbands
+- [ ] More hairstyles, body types
 - [ ] Animated characters (walk cycle, crouch, reload)
 - [ ] Agent skins (team-specific outfits)
 
 ## Settings / UX
-- [ ] Rebindable keys for chat and drop
-- [ ] Crosshair codes (import/export)
+- [x] Rebindable keys for chat and drop
+- [x] Crosshair codes (copy / paste via clipboard)
 - [ ] Separate music volume once there is music
 - [ ] Gamepad support
-- [ ] Brightness / gamma, shadow quality, MSAA settings
+- [x] Brightness, shadows on/off, MSAA settings
 - [ ] Migrate from the deprecated `Interaction` to `bevy::ui_widgets` (Bevy 0.20 deprecation)
 - [ ] Loading screen + tooltips
 - [ ] Localisation
 
 ## Audio & visuals
 - [ ] Real sound files (currently procedurally synthesized)
-- [ ] Spatial audio (left/right panning)
-- [ ] Muzzle flash, shell casings, blood decals
+- [x] Spatial audio (left/right panning)
+- [x] Muzzle flash
+- [x] Shell casings, blood puffs
+- [ ] Blood decals on walls
 - [ ] Better weapon and knife models
 - [ ] Skybox
 
 ## Tech
 - [ ] CI running `cargo test` and `cargo clippy`
-- [ ] More tests for round flow, FFA respawns and grenades
+- [x] Tests for overtime, drop/pickup and bans
+- [ ] More tests for FFA respawns and grenades

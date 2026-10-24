@@ -230,3 +230,130 @@ fn team_chat_is_tagged_with_team() {
         GameEvent::Chat { text, team: Some(Team::Alpha), .. } if text == "rush B"
     )));
 }
+
+#[test]
+fn friendly_fire_toggle_kick_and_fall_damage() {
+    let mut server = GameServer::host("ff".into(), String::new(), GameMode::TwoVTwo, 27250).unwrap();
+    let port = server.port;
+    let (mut a, mut b, mut c) = (TestClient::new(port), TestClient::new(port), TestClient::new(port));
+    for (cl, name) in [(&a, "Host"), (&b, "Mate"), (&c, "Enemy")] {
+        cl.join(name, "");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        server.tick(0.01);
+    }
+    run(&mut server, &mut [&mut a, &mut b, &mut c], 0.2);
+    // Put the host and "Mate" on the same team.
+    let host_team = a.me().team;
+    // Auto-assign filled the host's team (2/2), so swap the enemy out first.
+    c.cmd(Cmd::SetTeam(host_team.other()));
+    run(&mut server, &mut [&mut a, &mut b, &mut c], 0.2);
+    b.cmd(Cmd::SetTeam(host_team));
+    a.cmd(Cmd::SetFriendlyFire(true));
+    run(&mut server, &mut [&mut a, &mut b, &mut c], 0.2);
+    assert!(a.snapshot.as_ref().unwrap().lobby.friendly_fire);
+    assert_eq!(b.me().team, host_team);
+
+    // Only the host may kick, and kicked players are gone.
+    let enemy = c.me().id;
+    b.cmd(Cmd::Kick(enemy));
+    run(&mut server, &mut [&mut a, &mut b, &mut c], 0.2);
+    assert_eq!(a.snapshot.as_ref().unwrap().players.len(), 3);
+    a.cmd(Cmd::Kick(enemy));
+    run(&mut server, &mut [&mut a, &mut b], 0.2);
+    assert_eq!(a.snapshot.as_ref().unwrap().players.len(), 2);
+
+    a.cmd(Cmd::StartMatch);
+    run(&mut server, &mut [&mut a, &mut b], FREEZE_TIME + 0.4);
+    a.state.pos = [-5.0, 0.0, -8.0];
+    b.state.pos = [5.0, 0.0, -8.0];
+    run(&mut server, &mut [&mut a, &mut b], 0.1);
+    // Teammate takes damage with friendly fire on (body shot, not lethal).
+    a.cmd(Cmd::Fire {
+        weapon: a.me().secondary.unwrap(),
+        origin: [-5.0, 1.2, -8.0],
+        dirs: vec![[1.0, 0.0, 0.0]],
+        heavy: false,
+    });
+    run(&mut server, &mut [&mut a, &mut b], 0.2);
+    assert!(b.me().health < 100, "friendly fire should hurt teammates");
+
+    // Fall damage is applied to yourself and clamped.
+    a.cmd(Cmd::FallDamage(30));
+    run(&mut server, &mut [&mut a, &mut b], 0.2);
+    assert_eq!(a.me().health, 70);
+}
+
+/// Like `run` but with big steps, for simulating whole matches quickly.
+fn run_fast(server: &mut GameServer, clients: &mut [&mut TestClient], seconds: f32) {
+    let steps = (seconds / 0.25).ceil() as usize;
+    for _ in 0..steps {
+        for c in clients.iter() {
+            c.send();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        server.tick(0.25);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        for c in clients.iter_mut() {
+            c.recv();
+        }
+    }
+}
+
+#[test]
+fn tied_match_goes_to_overtime() {
+    let (mut server, mut a, mut b) = setup(27260, "");
+    a.cmd(Cmd::StartMatch);
+    run_fast(&mut server, &mut [&mut a, &mut b], 0.5);
+    // Alternate round wins until 8-8 (first to 9 in 1v1).
+    for round in 0..16 {
+        run_fast(&mut server, &mut [&mut a, &mut b], FREEZE_TIME + 0.5);
+        let loser = if round % 2 == 0 { &mut b } else { &mut a };
+        loser.cmd(Cmd::FallDamage(200));
+        run_fast(&mut server, &mut [&mut a, &mut b], 0.5);
+        run_fast(&mut server, &mut [&mut a, &mut b], crate::game_mode::ROUND_END_TIME);
+    }
+    let snap = a.snapshot.as_ref().unwrap();
+    assert_eq!(snap.score, [8, 8]);
+    assert_eq!(snap.win_target, 12, "overtime should need 4 more rounds");
+    assert_ne!(snap.phase, Phase::MatchEnd);
+}
+
+#[test]
+fn dropped_guns_can_be_picked_up() {
+    let (mut server, mut a, mut b) = setup(27270, "");
+    a.cmd(Cmd::StartMatch);
+    run(&mut server, &mut [&mut a, &mut b], FREEZE_TIME + 0.4);
+    a.state.pos = [-5.0, 0.0, -8.0];
+    a.state.yaw = 0.0;
+    run(&mut server, &mut [&mut a, &mut b], 0.1);
+    a.cmd(Cmd::Drop(WeaponId::Glock));
+    run(&mut server, &mut [&mut a, &mut b], 0.2);
+    assert_eq!(a.me().secondary, None);
+    let dropped = a.snapshot.as_ref().unwrap().dropped.clone();
+    assert_eq!(dropped.len(), 1);
+    // It lands about a meter in front (yaw 0 faces -Z).
+    let pos = dropped[0].pos;
+    assert!((pos[2] - -9.0).abs() < 0.2, "dropped at {pos:?}");
+
+    // Walk onto it; the dropper can grab it again after a short delay.
+    a.state.pos = [pos[0], 0.0, pos[2]];
+    run(&mut server, &mut [&mut a, &mut b], 1.2);
+    assert_eq!(a.me().secondary, Some(WeaponId::Glock));
+    assert!(a.snapshot.as_ref().unwrap().dropped.is_empty());
+}
+
+#[test]
+fn banned_players_cannot_rejoin() {
+    let (mut server, mut a, mut b) = setup(27280, "");
+    let bob = b.me().id;
+    a.cmd(Cmd::Ban(bob));
+    run(&mut server, &mut [&mut a], 0.2);
+    let mut again = TestClient::new(server.port);
+    again.join("Bob again", "");
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    server.tick(0.01);
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    again.recv();
+    assert_eq!(again.rejected.as_deref(), Some("You are banned from this lobby"));
+    b.recv();
+}

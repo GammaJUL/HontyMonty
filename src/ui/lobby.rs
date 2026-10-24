@@ -4,7 +4,7 @@ use bevy::prelude::*;
 
 use super::widgets::*;
 use crate::game_mode::{Phase, Team};
-use crate::net::protocol::Cmd;
+use crate::net::protocol::{Cmd, PlayerId};
 use crate::net::{leave_lobby, ConnStatus, GameServer, NetClient};
 use crate::states::{AppState, MenuMessage};
 
@@ -14,6 +14,9 @@ enum LobbyButton {
     ModePrev,
     ModeNext,
     Start,
+    FriendlyFire,
+    Kick(PlayerId),
+    Ban(PlayerId),
     Leave,
 }
 
@@ -75,6 +78,7 @@ fn spawn(mut commands: Commands) {
                     label(r, "Host:", 16.0, TEXT_DIM);
                     button_sized(r, "< Mode", LobbyButton::ModePrev, px(90), 38.0, 16.0);
                     button_sized(r, "Mode >", LobbyButton::ModeNext, px(90), 38.0, 16.0);
+                    button_sized(r, "Friendly Fire", LobbyButton::FriendlyFire, px(140), 38.0, 16.0);
                     button_sized(r, "START MATCH", LobbyButton::Start, px(200), 44.0, 20.0);
                 });
                 p.spawn(Node {
@@ -98,6 +102,7 @@ fn handle(
     for action in clicked(&q) {
         let Some(c) = client.as_mut() else { continue };
         let mode = c.snapshot.as_ref().map(|s| s.lobby.mode);
+        let ff = c.snapshot.as_ref().is_some_and(|s| s.lobby.friendly_fire);
         match *action {
             LobbyButton::Team(t) => c.send_cmd(Cmd::SetTeam(t)),
             LobbyButton::ModePrev => {
@@ -111,6 +116,9 @@ fn handle(
                 }
             }
             LobbyButton::Start => c.send_cmd(Cmd::StartMatch),
+            LobbyButton::FriendlyFire => c.send_cmd(Cmd::SetFriendlyFire(!ff)),
+            LobbyButton::Kick(id) => c.send_cmd(Cmd::Kick(id)),
+            LobbyButton::Ban(id) => c.send_cmd(Cmd::Ban(id)),
             LobbyButton::Leave => {
                 leave_lobby(&mut commands, Some(c), server.as_deref_mut());
                 next.set(AppState::Browser);
@@ -140,12 +148,14 @@ fn refresh(
         return;
     };
     let me = c.my_id;
+    let i_am_host = c.is_host();
     let mode = snap.lobby.mode;
     let head = format!(
-        "{}  -  {}{}",
+        "{}  -  {}{}\nFriendly fire: {}",
         snap.lobby.name,
         mode.name(),
-        if snap.lobby.has_password { "  (password protected)" } else { "" }
+        if snap.lobby.has_password { "  (password protected)" } else { "" },
+        if snap.lobby.friendly_fire { "ON" } else { "off" }
     );
     if let Ok(mut t) = header.single_mut()
         && t.0 != head
@@ -203,12 +213,20 @@ fn refresh(
                         Node {
                             padding: UiRect::axes(px(10), px(6)),
                             border_radius: BorderRadius::all(px(4)),
+                            justify_content: JustifyContent::SpaceBetween,
+                            align_items: AlignItems::Center,
                             ..default()
                         },
                         BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.05)),
                     ))
                     .with_children(|b| {
                         label(b, text, 18.0, TEXT);
+                        if i_am_host && Some(p.id) != me {
+                            b.spawn(row()).with_children(|r| {
+                                button_sized(r, "Kick", LobbyButton::Kick(p.id), px(56), 26.0, 14.0);
+                                button_sized(r, "Ban", LobbyButton::Ban(p.id), px(52), 26.0, 14.0);
+                            });
+                        }
                     });
                 }
             });

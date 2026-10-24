@@ -3,7 +3,9 @@
 
 use std::time::{Duration, Instant};
 
+use bevy::camera::Exposure;
 use bevy::prelude::*;
+use bevy::render::view::Msaa;
 use bevy::window::{MonitorSelection, PresentMode, PrimaryWindow, VideoModeSelection, WindowMode};
 use serde::{Deserialize, Serialize};
 
@@ -60,6 +62,37 @@ pub struct Crosshair {
     pub dynamic: bool,
 }
 
+impl Crosshair {
+    /// Short shareable code, e.g. `HM1;7;4;2;0;0;1`.
+    pub fn to_code(&self) -> String {
+        format!(
+            "HM1;{};{};{};{};{};{}",
+            self.size,
+            self.gap,
+            self.thickness,
+            self.dot as u8,
+            self.color,
+            self.dynamic as u8
+        )
+    }
+
+    pub fn from_code(code: &str) -> Option<Crosshair> {
+        let parts: Vec<&str> = code.trim().split(';').collect();
+        if parts.len() != 7 || parts[0] != "HM1" {
+            return None;
+        }
+        let f = |i: usize| parts[i].parse::<f32>().ok().filter(|v| v.is_finite());
+        Some(Crosshair {
+            size: f(1)?.clamp(0.0, 30.0),
+            gap: f(2)?.clamp(-5.0, 30.0),
+            thickness: f(3)?.clamp(0.5, 8.0),
+            dot: parts[4] == "1",
+            color: parts[5].parse::<usize>().ok()? % CROSSHAIR_COLORS.len(),
+            dynamic: parts[6] == "1",
+        })
+    }
+}
+
 impl Default for Crosshair {
     fn default() -> Self {
         Self {
@@ -84,6 +117,11 @@ pub struct Settings {
     pub fps_limit: u32,
     pub show_fps: bool,
     pub fov: f32,
+    pub shadows: bool,
+    /// 4x MSAA when on.
+    pub anti_aliasing: bool,
+    /// Exposure multiplier, 1.0 = default.
+    pub brightness: f32,
     /// CS-style sensitivity: degrees per mouse count = sensitivity * 0.022.
     pub sensitivity: f32,
     pub zoom_sensitivity: f32,
@@ -106,6 +144,9 @@ impl Default for Settings {
             fps_limit: 144,
             show_fps: true,
             fov: 90.0,
+            shadows: true,
+            anti_aliasing: true,
+            brightness: 1.0,
             sensitivity: 2.0,
             zoom_sensitivity: 1.0,
             invert_y: false,
@@ -145,6 +186,7 @@ impl Plugin for SettingsPlugin {
                 (apply_window_settings, apply_audio_settings, save_settings)
                     .run_if(resource_changed::<Settings>),
             )
+            .add_systems(PostUpdate, apply_graphics)
             .add_systems(Last, limit_frame_rate);
     }
 }
@@ -173,6 +215,32 @@ fn apply_window_settings(settings: Res<Settings>, mut window: Single<&mut Window
         && (window.resolution.physical_width() != w || window.resolution.physical_height() != h)
     {
         window.resolution.set_physical_resolution(w, h);
+    }
+}
+
+/// Runs every frame so newly spawned cameras and lights pick the settings up too.
+fn apply_graphics(
+    mut commands: Commands,
+    settings: Res<Settings>,
+    cams: Query<(Entity, Option<&Msaa>, Option<&Exposure>), With<Camera3d>>,
+    mut lights: Query<&mut DirectionalLight>,
+) {
+    let msaa = if settings.anti_aliasing { Msaa::Sample4 } else { Msaa::Off };
+    let exposure = Exposure {
+        ev100: Exposure::default().ev100 - settings.brightness.max(0.1).log2(),
+    };
+    for (e, current_msaa, current_exposure) in &cams {
+        if current_msaa != Some(&msaa) {
+            commands.entity(e).insert(msaa);
+        }
+        if current_exposure.map(|x| x.ev100) != Some(exposure.ev100) {
+            commands.entity(e).insert(exposure);
+        }
+    }
+    for mut light in &mut lights {
+        if light.shadow_maps_enabled != settings.shadows {
+            light.shadow_maps_enabled = settings.shadows;
+        }
     }
 }
 

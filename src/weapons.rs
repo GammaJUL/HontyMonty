@@ -458,6 +458,37 @@ impl GrenadeKind {
     }
 }
 
+/// View kick for the `shot`-th bullet of a spray as (yaw, pitch) multipliers of
+/// `recoil_kick`. Positive yaw drifts the view left.
+pub fn spray_step(w: WeaponId, shot: u32) -> (f32, f32) {
+    let wobble = |n: u32, amount: f32| if (n / 4) % 2 == 0 { amount } else { -amount };
+    match w {
+        // Straight up, then hard left, then hard right.
+        WeaponId::Ak47 => match shot {
+            0..=2 => (0.0, 0.6),
+            3..=8 => (if shot % 2 == 0 { 0.08 } else { -0.08 }, 1.3),
+            9..=14 => (0.95, 0.25),
+            15..=20 => (-1.15, 0.1),
+            21..=25 => (0.8, 0.05),
+            _ => (wobble(shot, 0.6), 0.05),
+        },
+        // Gentler: up, slightly right, then left.
+        WeaponId::M4a4 | WeaponId::Aug | WeaponId::Sg553 => match shot {
+            0..=2 => (0.0, 0.5),
+            3..=9 => (-0.1, 1.0),
+            10..=15 => (-0.65, 0.2),
+            16..=21 => (0.75, 0.1),
+            _ => (wobble(shot, 0.45), 0.05),
+        },
+        WeaponId::Mp9 | WeaponId::P90 => match shot {
+            0..=3 => (0.0, 0.7),
+            4..=11 => (wobble(shot * 2, 0.3), 0.8),
+            _ => (wobble(shot, 0.5), 0.15),
+        },
+        _ => (if shot % 2 == 0 { 0.15 } else { -0.15 }, 1.0),
+    }
+}
+
 /// Knife damage: left-click slash or right-click stab, doubled-ish from behind like CS2.
 pub fn knife_damage(heavy: bool, backstab: bool) -> f32 {
     match (heavy, backstab) {
@@ -473,6 +504,14 @@ pub fn knife_range(heavy: bool) -> f32 {
 }
 
 pub const KNIFE_HEAVY_INTERVAL: f32 = 1.0;
+
+/// Landing faster than this (m/s) hurts.
+pub const FALL_SAFE_SPEED: f32 = 11.0;
+pub const FALL_DAMAGE_PER_MS: f32 = 11.0;
+
+pub fn fall_damage(impact_speed: f32) -> i32 {
+    ((impact_speed - FALL_SAFE_SPEED).max(0.0) * FALL_DAMAGE_PER_MS).round() as i32
+}
 
 pub const MAX_GRENADES: usize = 4;
 pub const HE_DAMAGE: f32 = 98.0;
@@ -580,6 +619,7 @@ impl HitGroup {
 pub enum DamageSource {
     Weapon(WeaponId),
     Grenade(GrenadeKind),
+    Fall,
 }
 
 impl DamageSource {
@@ -587,6 +627,7 @@ impl DamageSource {
         match self {
             DamageSource::Weapon(w) => w.def().name,
             DamageSource::Grenade(g) => g.name(),
+            DamageSource::Fall => "Fall",
         }
     }
 }

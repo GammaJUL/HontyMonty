@@ -2,6 +2,7 @@
 
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input::ButtonState;
+use bevy::clipboard::{Clipboard, ClipboardRead};
 use bevy::prelude::*;
 
 use super::widgets::*;
@@ -37,6 +38,9 @@ enum Field {
     FpsLimit,
     ShowFps,
     Fov,
+    Shadows,
+    AntiAliasing,
+    Brightness,
     Sensitivity,
     ZoomSensitivity,
     InvertY,
@@ -61,6 +65,9 @@ fn fields(tab: Tab) -> &'static [(Field, &'static str)] {
             (Field::FpsLimit, "FPS Limit"),
             (Field::ShowFps, "Show FPS"),
             (Field::Fov, "Field of View"),
+            (Field::Shadows, "Shadows"),
+            (Field::AntiAliasing, "Anti-aliasing (4x MSAA)"),
+            (Field::Brightness, "Brightness"),
         ],
         Tab::Mouse => &[
             (Field::Sensitivity, "Sensitivity"),
@@ -91,8 +98,13 @@ enum SettingsButton {
     Step(Field, i32),
     Rebind(Action),
     ResetTab,
+    CopyCode,
+    PasteCode,
     Close,
 }
+
+#[derive(Component)]
+struct CodeText;
 
 #[derive(Component)]
 struct SettingsRoot;
@@ -114,6 +126,8 @@ struct SettingsUi {
     tab: Tab,
     built_tab: Option<Tab>,
     capturing: Option<Action>,
+    code_status: String,
+    paste: Option<ClipboardRead>,
 }
 
 pub fn plugin(app: &mut App) {
@@ -122,11 +136,37 @@ pub fn plugin(app: &mut App) {
             tab: Tab::Video,
             built_tab: None,
             capturing: None,
+            code_status: String::new(),
+            paste: None,
         })
         .add_systems(
             Update,
-            (escape_closes, open_close, build_tab, handle, capture_binding, refresh_values, preview_crosshair).chain(),
+            (escape_closes, open_close, build_tab, handle, crosshair_code, capture_binding, refresh_values, preview_crosshair).chain(),
         );
+}
+
+/// Applies a pasted crosshair code once the clipboard read finishes, and shows the current code.
+fn crosshair_code(
+    mut ui: ResMut<SettingsUi>,
+    mut settings: ResMut<Settings>,
+    mut text: Query<&mut Text, With<CodeText>>,
+) {
+    if let Some(result) = ui.paste.as_mut().and_then(|r| r.poll_result()) {
+        ui.paste = None;
+        ui.code_status = match result.ok().and_then(|s| Crosshair::from_code(&s)) {
+            Some(c) => {
+                settings.crosshair = c;
+                "Crosshair imported!".into()
+            }
+            None => "Clipboard has no valid crosshair code".into(),
+        };
+    }
+    if let Ok(mut t) = text.single_mut() {
+        let s = format!("{}   {}", settings.crosshair.to_code(), ui.code_status);
+        if t.0 != s {
+            t.0 = s;
+        }
+    }
 }
 
 /// In menus Escape closes the overlay (in-game the pause menu handles Escape).
@@ -281,6 +321,11 @@ fn build_tab(
             });
         }
         if tab == Tab::Crosshair {
+            b.spawn(row()).with_children(|r| {
+                button_sized(r, "Copy code", SettingsButton::CopyCode, px(120), 32.0, 15.0);
+                button_sized(r, "Paste code", SettingsButton::PasteCode, px(120), 32.0, 15.0);
+                r.spawn((CodeText, Text::new(""), font(14.0), TextColor(TEXT_DIM)));
+            });
             b.spawn((
                 Node {
                     width: px(160),
@@ -327,6 +372,9 @@ fn step_field(s: &mut Settings, field: Field, d: i32) {
         Field::FpsLimit => s.fps_limit = cycle(&FPS_LIMITS, s.fps_limit, d),
         Field::ShowFps => s.show_fps = !s.show_fps,
         Field::Fov => s.fov = (s.fov + df * 5.0).clamp(60.0, 120.0),
+        Field::Shadows => s.shadows = !s.shadows,
+        Field::AntiAliasing => s.anti_aliasing = !s.anti_aliasing,
+        Field::Brightness => s.brightness = ((s.brightness + df * 0.1) * 10.0).round().clamp(5.0, 20.0) / 10.0,
         Field::Sensitivity => s.sensitivity = ((s.sensitivity + df * 0.1) * 100.0).round().clamp(5.0, 1000.0) / 100.0,
         Field::ZoomSensitivity => {
             s.zoom_sensitivity = ((s.zoom_sensitivity + df * 0.05) * 100.0).round().clamp(5.0, 300.0) / 100.0
@@ -358,6 +406,9 @@ fn field_text(s: &Settings, field: Field) -> String {
         }
         Field::ShowFps => onoff(s.show_fps),
         Field::Fov => format!("{:.0} deg", s.fov),
+        Field::Shadows => onoff(s.shadows),
+        Field::AntiAliasing => onoff(s.anti_aliasing),
+        Field::Brightness => format!("{:.0}%", s.brightness * 100.0),
         Field::Sensitivity => format!("{:.2}", s.sensitivity),
         Field::ZoomSensitivity => format!("{:.2}x", s.zoom_sensitivity),
         Field::InvertY => onoff(s.invert_y),
@@ -379,6 +430,7 @@ fn handle(
     mut ui: ResMut<SettingsUi>,
     mut settings: ResMut<Settings>,
     mut open: ResMut<SettingsOpen>,
+    mut clipboard: ResMut<Clipboard>,
 ) {
     for action in clicked(&q) {
         match *action {
@@ -395,6 +447,9 @@ fn handle(
                         settings.fps_limit = d.fps_limit;
                         settings.show_fps = d.show_fps;
                         settings.fov = d.fov;
+                        settings.shadows = d.shadows;
+                        settings.anti_aliasing = d.anti_aliasing;
+                        settings.brightness = d.brightness;
                     }
                     Tab::Mouse => {
                         settings.sensitivity = d.sensitivity;
@@ -411,6 +466,13 @@ fn handle(
                     Tab::Keybinds => settings.keybinds = Keybinds::default(),
                 }
             }
+            SettingsButton::CopyCode => {
+                ui.code_status = match clipboard.set_text(settings.crosshair.to_code()) {
+                    Ok(()) => "Copied!".into(),
+                    Err(e) => format!("Copy failed: {e:?}"),
+                };
+            }
+            SettingsButton::PasteCode => ui.paste = Some(clipboard.fetch_text()),
             SettingsButton::Close => open.0 = false,
         }
     }

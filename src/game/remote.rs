@@ -33,11 +33,19 @@ pub struct RemotePlayer {
     step_timer: f32,
 }
 
+impl RemotePlayer {
+    /// Solid box for local movement; dead players can be walked through.
+    pub fn collider(&self, pos: Vec3) -> Option<crate::map::Aabb> {
+        let height = if self.crouch { crate::map::CROUCH_HEIGHT } else { crate::map::STAND_HEIGHT };
+        self.alive.then(|| crate::map::player_aabb(pos, height))
+    }
+}
+
 #[derive(Component)]
 struct NameTag(PlayerId);
 
 pub fn plugin(app: &mut App) {
-    app.add_systems(Update, sync_remote.in_set(GameSet::Simulate))
+    app.add_systems(Update, (sync_remote, sync_dropped).in_set(GameSet::Simulate))
         .add_systems(Update, (interpolate, name_tags, footsteps).in_set(GameSet::Present));
 }
 
@@ -254,7 +262,41 @@ fn footsteps(
         rp.step_timer = 0.36;
         let volume = (1.0 - t.translation.distance(ear) / 25.0).clamp(0.0, 1.0) * 0.6;
         if volume > 0.02 {
-            sfx.write(PlaySfx::fx(Sound::Footstep, volume));
+            sfx.write(PlaySfx::fx_at(Sound::Footstep, volume, t.translation));
         }
+    }
+}
+
+/// A gun lying on the ground (mirrors `Snapshot::dropped`).
+#[derive(Component)]
+struct DroppedModel(u32);
+
+fn sync_dropped(
+    mut commands: Commands,
+    client: Option<Res<NetClient>>,
+    existing: Query<(Entity, &DroppedModel)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    mut textures: ResMut<SkinTextures>,
+) {
+    let Some(snap) = client.as_ref().and_then(|c| c.snapshot.as_ref()) else { return };
+    for (e, d) in &existing {
+        if !snap.dropped.iter().any(|g| g.id == d.0) {
+            commands.entity(e).despawn();
+        }
+    }
+    for gun in &snap.dropped {
+        if existing.iter().any(|(_, d)| d.0 == gun.id) {
+            continue;
+        }
+        let model = spawn_weapon_model(&mut commands, &mut meshes, &mut mats, &mut images, &mut textures, gun.weapon, None);
+        // Lay it on its side.
+        let rot = Quat::from_rotation_y(gun.yaw) * Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        commands.entity(model).insert((
+            InGameEntity,
+            DroppedModel(gun.id),
+            Transform::from_translation(Vec3::from(gun.pos)).with_rotation(rot),
+        ));
     }
 }

@@ -159,6 +159,63 @@ pub fn spawn_character(
         }
     }
 
+    // Facial hair sits on the front face (z = -0.13); the mouth is at y = 1.6.
+    let mustache = |b: &mut Builder| {
+        b.cube(Vec3::new(0.11, 0.025, 0.015), Vec3::new(0.0, 1.622, -0.137), hair);
+    };
+    match look.facial_hair {
+        FacialHair::None => {}
+        FacialHair::Stubble => {
+            let stubble = hair.mix(&skin, 0.55);
+            b.cube(Vec3::new(0.24, 0.1, 0.008), Vec3::new(0.0, 1.585, -0.132), stubble);
+        }
+        FacialHair::Mustache => mustache(&mut b),
+        FacialHair::Goatee => {
+            mustache(&mut b);
+            b.cube(Vec3::new(0.06, 0.06, 0.015), Vec3::new(0.0, 1.565, -0.137), hair);
+        }
+        FacialHair::Beard => {
+            mustache(&mut b);
+            b.cube(Vec3::new(0.27, 0.08, 0.03), Vec3::new(0.0, 1.55, -0.135), hair);
+            for side in [-1.0f32, 1.0] {
+                b.cube(Vec3::new(0.03, 0.14, 0.2), Vec3::new(side * 0.135, 1.6, -0.03), hair);
+            }
+        }
+    }
+    let dark = Color::srgb(0.03, 0.03, 0.04);
+    match look.accessory {
+        Accessory::None => {}
+        Accessory::Glasses => {
+            // Thin frames around each eye plus the bridge.
+            for side in [-1.0f32, 1.0] {
+                let x = side * 0.06;
+                b.cube(Vec3::new(0.085, 0.01, 0.01), Vec3::new(x, 1.72, -0.142), dark);
+                b.cube(Vec3::new(0.085, 0.01, 0.01), Vec3::new(x, 1.66, -0.142), dark);
+                b.cube(Vec3::new(0.01, 0.07, 0.01), Vec3::new(x - 0.04, 1.69, -0.142), dark);
+                b.cube(Vec3::new(0.01, 0.07, 0.01), Vec3::new(x + 0.04, 1.69, -0.142), dark);
+                b.cube(Vec3::new(0.01, 0.01, 0.13), Vec3::new(side * 0.135, 1.715, -0.07), dark);
+            }
+        }
+        Accessory::Sunglasses => {
+            for side in [-1.0f32, 1.0] {
+                b.cube(Vec3::new(0.09, 0.06, 0.012), Vec3::new(side * 0.06, 1.69, -0.143), dark);
+                b.cube(Vec3::new(0.01, 0.01, 0.13), Vec3::new(side * 0.135, 1.715, -0.07), dark);
+            }
+            b.cube(Vec3::new(0.04, 0.012, 0.012), Vec3::new(0.0, 1.71, -0.143), dark);
+        }
+        Accessory::Cap => {
+            b.cube(Vec3::new(0.29, 0.1, 0.29), Vec3::new(0.0, 1.85, 0.0), shirt);
+            b.cube(Vec3::new(0.26, 0.02, 0.15), Vec3::new(0.0, 1.81, -0.2), shirt);
+        }
+        Accessory::Beanie => {
+            b.cube(Vec3::new(0.3, 0.15, 0.3), Vec3::new(0.0, 1.85, 0.0), pants);
+            b.cube(Vec3::new(0.31, 0.045, 0.31), Vec3::new(0.0, 1.79, 0.0), pants.mix(&Color::WHITE, 0.15));
+        }
+        Accessory::Headband => {
+            b.cube(Vec3::new(0.275, 0.04, 0.275), Vec3::new(0.0, 1.75, 0.0), Color::srgb(0.8, 0.1, 0.1));
+        }
+    }
+
     let scale = look.height.clamp(0.9, 1.1) * if female { 0.96 } else { 1.0 };
     let root = commands
         .spawn((

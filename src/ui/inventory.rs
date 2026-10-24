@@ -25,8 +25,13 @@ enum InvButton {
     PrevPage,
     NextPage,
     EquipResult,
+    Filter(Option<Rarity>),
+    DeleteMode,
     Back,
 }
+
+#[derive(Component)]
+struct HintText;
 
 /// Inserted by the dev helper to start one spin automatically.
 #[derive(Resource)]
@@ -64,6 +69,9 @@ struct CaseUi {
     page: usize,
     dirty: bool,
     rng: Option<fastrand::Rng>,
+    filter: Option<Rarity>,
+    /// Clicking an item deletes it instead of equipping it.
+    delete_mode: bool,
 }
 
 pub fn plugin(app: &mut App) {
@@ -170,7 +178,22 @@ fn spawn(mut commands: Commands) {
             root.spawn(panel(px(560))).with_children(|p| {
                 title(p, "Inventory");
                 p.spawn((StatsText, Text::new(""), font(15.0), TextColor(TEXT_DIM)));
-                label(p, "Click an item to equip / unequip it.", 14.0, TEXT_DIM);
+                p.spawn(row()).with_children(|r| {
+                    button_sized(r, "All", InvButton::Filter(None), px(52), 28.0, 13.0);
+                    for rarity in Rarity::ALL {
+                        let short = match rarity {
+                            Rarity::MilSpec => "Blue",
+                            Rarity::Restricted => "Purple",
+                            Rarity::Classified => "Pink",
+                            Rarity::Covert => "Red",
+                            Rarity::RareSpecial => "Gold",
+                        };
+                        let b = button_sized(r, short, InvButton::Filter(Some(rarity)), px(66), 28.0, 13.0);
+                        r.commands().entity(b).insert(BorderColor::all(rgb(rarity.color())));
+                    }
+                    button_sized(r, "Delete mode", InvButton::DeleteMode, px(132), 28.0, 13.0);
+                });
+                p.spawn((HintText, Text::new(""), font(14.0), TextColor(TEXT_DIM)));
                 p.spawn((
                     Grid,
                     Node {
@@ -261,7 +284,7 @@ fn spawn_card(
             c.spawn((
                 ImageNode {
                     image_mode: NodeImageMode::Stretch,
-                    ..ImageNode::new(textures.get(images, def, float))
+                    ..ImageNode::new(textures.get(images, def, float, 0))
                 },
                 Node {
                     width: px(CARD_W - 16.0),
@@ -320,7 +343,22 @@ fn handle(
                 }
             }
             InvButton::Card(uid) => {
-                toggle_equip(&mut profile, uid);
+                if ui.delete_mode {
+                    profile.inventory.retain(|s| s.uid != uid);
+                    profile.equipped.retain(|_, equipped| *equipped != uid);
+                    profile.save();
+                } else {
+                    toggle_equip(&mut profile, uid);
+                }
+                ui.dirty = true;
+            }
+            InvButton::Filter(f) => {
+                ui.filter = f;
+                ui.page = 0;
+                ui.dirty = true;
+            }
+            InvButton::DeleteMode => {
+                ui.delete_mode = !ui.delete_mode;
                 ui.dirty = true;
             }
             InvButton::EquipResult => {
@@ -438,17 +476,43 @@ fn rebuild_grid(
     mut ui: ResMut<CaseUi>,
     profile: Res<Profile>,
     grid: Query<Entity, With<Grid>>,
-    mut page_text: Query<&mut Text, (With<PageText>, Without<StatsText>)>,
-    mut stats: Query<&mut Text, (With<StatsText>, Without<PageText>)>,
+    mut page_text: Query<&mut Text, (With<PageText>, Without<StatsText>, Without<HintText>)>,
+    mut stats: Query<&mut Text, (With<StatsText>, Without<PageText>, Without<HintText>)>,
     mut images: ResMut<Assets<Image>>,
     mut textures: ResMut<SkinTextures>,
+    buttons: Query<(Entity, &InvButton)>,
+    mut hint: Query<&mut Text, (With<HintText>, Without<PageText>, Without<StatsText>)>,
 ) {
     if !ui.dirty {
         return;
     }
     ui.dirty = false;
+    for (e, b) in &buttons {
+        let on = match b {
+            InvButton::Filter(f) => *f == ui.filter,
+            InvButton::DeleteMode => ui.delete_mode,
+            _ => continue,
+        };
+        if on {
+            commands.entity(e).insert(Selected);
+        } else {
+            commands.entity(e).remove::<Selected>();
+        }
+    }
+    if let Ok(mut t) = hint.single_mut() {
+        t.0 = if ui.delete_mode {
+            "DELETE MODE: clicking an item deletes it forever.".into()
+        } else {
+            "Click an item to equip / unequip it.".into()
+        };
+    }
     let Ok(grid) = grid.single() else { return };
-    let mut items: Vec<&OwnedSkin> = profile.inventory.iter().collect();
+    let filter = ui.filter;
+    let mut items: Vec<&OwnedSkin> = profile
+        .inventory
+        .iter()
+        .filter(|s| filter.is_none_or(|r| s.def().rarity == r))
+        .collect();
     items.sort_by(|a, b| b.def().rarity.cmp(&a.def().rarity).then(b.uid.cmp(&a.uid)));
     let pages = items.len().div_ceil(PAGE_SIZE).max(1);
     ui.page = ui.page.min(pages - 1);
@@ -488,7 +552,7 @@ fn rebuild_grid(
             let def = item.def();
             let equipped = profile.equipped.get(&def.weapon) == Some(&item.uid);
             let color = rgb(def.rarity.color());
-            let tex = textures.get(&mut images, def, item.float);
+            let tex = textures.get(&mut images, def, item.float, item.pattern_seed);
             let mut e = g.spawn((
                 UiButton,
                 InvButton::Card(item.uid),
@@ -530,9 +594,10 @@ fn rebuild_grid(
                 label(
                     c,
                     format!(
-                        "{} | {:.3}{}",
+                        "{} | {:.3}{}{}",
                         item.wear().name(),
                         item.float,
+                        if item.stattrak { format!(" | {} kills", item.kills) } else { String::new() },
                         if equipped { "  [equipped]" } else { "" }
                     ),
                     12.0,

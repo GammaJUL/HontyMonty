@@ -18,14 +18,18 @@ enum Field {
     Shirt,
     Pants,
     Height,
+    FacialHair,
+    Accessory,
 }
 
-const FIELDS: [(Field, &str); 8] = [
+const FIELDS: [(Field, &str); 10] = [
     (Field::Gender, "Body"),
     (Field::SkinTone, "Skin Tone"),
     (Field::HairStyle, "Hair Style"),
     (Field::HairColor, "Hair Color"),
     (Field::EyeColor, "Eye Color"),
+    (Field::FacialHair, "Facial Hair"),
+    (Field::Accessory, "Accessory"),
     (Field::Shirt, "Shirt"),
     (Field::Pants, "Pants"),
     (Field::Height, "Height"),
@@ -140,6 +144,14 @@ fn handle(
                 Field::Shirt => a.shirt_color = step(a.shirt_color, d, CLOTHING_COLORS.len()),
                 Field::Pants => a.pants_color = step(a.pants_color, d, CLOTHING_COLORS.len()),
                 Field::Height => a.height = (a.height + d as f32 * 0.02).clamp(0.9, 1.1),
+                Field::FacialHair => {
+                    let i = FacialHair::ALL.iter().position(|h| *h == a.facial_hair).unwrap_or(0);
+                    a.facial_hair = FacialHair::ALL[step(i, d, FacialHair::ALL.len())];
+                }
+                Field::Accessory => {
+                    let i = Accessory::ALL.iter().position(|h| *h == a.accessory).unwrap_or(0);
+                    a.accessory = Accessory::ALL[step(i, d, Accessory::ALL.len())];
+                }
             },
             CustomizeButton::Randomize => {
                 *a = Appearance {
@@ -151,6 +163,8 @@ fn handle(
                     shirt_color: fastrand::usize(..CLOTHING_COLORS.len()),
                     pants_color: fastrand::usize(..CLOTHING_COLORS.len()),
                     height: 0.94 + fastrand::f32() * 0.12,
+                    facial_hair: FacialHair::ALL[fastrand::usize(..FacialHair::ALL.len())],
+                    accessory: Accessory::ALL[fastrand::usize(..Accessory::ALL.len())],
                 };
             }
             CustomizeButton::Reset => *a = Appearance::default(),
@@ -181,6 +195,8 @@ fn refresh(
             Field::Shirt => CLOTHING_COLORS[a.shirt_color % CLOTHING_COLORS.len()].0.to_string(),
             Field::Pants => CLOTHING_COLORS[a.pants_color % CLOTHING_COLORS.len()].0.to_string(),
             Field::Height => format!("{:.0} cm", 180.0 * a.height),
+            Field::FacialHair => a.facial_hair.name().to_string(),
+            Field::Accessory => a.accessory.name().to_string(),
         };
         if text.0 != value {
             text.0 = value;

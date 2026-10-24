@@ -28,10 +28,12 @@ pub enum Action {
     Scoreboard,
     Chat,
     TeamChat,
+    Inspect,
+    Drop,
 }
 
 impl Action {
-    pub const ALL: [Action; 18] = [
+    pub const ALL: [Action; 20] = [
         Action::MoveForward,
         Action::MoveBack,
         Action::MoveLeft,
@@ -50,6 +52,8 @@ impl Action {
         Action::Scoreboard,
         Action::Chat,
         Action::TeamChat,
+        Action::Inspect,
+        Action::Drop,
     ];
 
     pub fn label(self) -> &'static str {
@@ -72,6 +76,8 @@ impl Action {
             Action::Scoreboard => "Scoreboard",
             Action::Chat => "Chat (all)",
             Action::TeamChat => "Chat (team)",
+            Action::Inspect => "Inspect Weapon",
+            Action::Drop => "Drop Weapon",
         }
     }
 }
@@ -249,6 +255,8 @@ impl Default for Keybinds {
             (Action::Scoreboard, Key(KeyCode::Tab)),
             (Action::Chat, Key(KeyCode::KeyY)),
             (Action::TeamChat, Key(KeyCode::KeyU)),
+            (Action::Inspect, Key(KeyCode::KeyF)),
+            (Action::Drop, Key(KeyCode::KeyG)),
         ];
         Keybinds(map.into_iter().collect())
     }

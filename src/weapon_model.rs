@@ -143,17 +143,19 @@ pub fn spawn_weapon_model(
     weapon: WeaponId,
     skin_item: Option<EquippedSkin>,
 ) -> Entity {
-    let def = skin_item.and_then(|s| skin(s.skin_id).filter(|d| d.weapon == weapon).map(|d| (d, s.float)));
+    let def = skin_item.and_then(|s| skin(s.skin_id).filter(|d| d.weapon == weapon).map(|d| (d, s)));
     let knife = def.map(|(d, _)| d.knife).unwrap_or(KnifeModel::Default);
     let (body_color, accent_color) = default_colors(weapon);
 
     let body = match def {
-        Some((d, float)) => {
+        Some((d, item)) => {
             let shiny = matches!(d.pattern, Pattern::Fade | Pattern::Doppler) || weapon == WeaponId::Knife;
+            // Worn skins are duller and rougher.
+            let wear = item.float.clamp(0.0, 1.0);
             mats.add(StandardMaterial {
-                base_color_texture: Some(textures.get(images, d, float)),
-                metallic: if shiny { 0.8 } else { 0.2 },
-                perceptual_roughness: if shiny { 0.25 } else { 0.6 },
+                base_color_texture: Some(textures.get(images, d, item.float, item.pattern_seed)),
+                metallic: if shiny { 0.8 } else { 0.2 } * (1.0 - wear * 0.7),
+                perceptual_roughness: (if shiny { 0.25 } else { 0.6 } + wear * 0.5).min(1.0),
                 ..default()
             })
         }
