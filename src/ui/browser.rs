@@ -96,7 +96,7 @@ fn spawn(mut commands: Commands, settings: Res<Settings>, mut msg: ResMut<MenuMe
         ))
         .with_children(|root| {
             // Left: profile + create.
-            root.spawn(panel(px(420))).with_children(|p| {
+            root.spawn(scroll_panel(px(420))).with_children(|p| {
                 title(p, "Play");
                 label(p, "Your name", 16.0, TEXT_DIM);
                 text_input(p, &settings.player_name, "Player name", false, 20, Input::PlayerName);
@@ -134,7 +134,7 @@ fn spawn(mut commands: Commands, settings: Res<Settings>, mut msg: ResMut<MenuMe
                 button(p, "Back", BrowserButton::Back, px(120));
             });
             // Right: browser + join.
-            root.spawn(panel(px(560))).with_children(|p| {
+            root.spawn(scroll_panel(px(560))).with_children(|p| {
                 p.spawn(Node {
                     justify_content: JustifyContent::SpaceBetween,
                     ..row()

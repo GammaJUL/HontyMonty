@@ -147,3 +147,89 @@ pub mod economy {
         (LOSS_BONUS_BASE + LOSS_BONUS_STEP * streak.saturating_sub(1)).min(LOSS_BONUS_MAX)
     }
 }
+
+/// How good the bots are. The host picks it in the lobby.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum BotDifficulty {
+    Easy,
+    #[default]
+    Normal,
+    Hard,
+    Expert,
+}
+
+/// Tuning numbers behind a [`BotDifficulty`].
+pub struct BotSkill {
+    /// Seconds between spotting an enemy and the first shot.
+    pub reaction: f32,
+    /// How fast the bot can turn its aim (radians per second).
+    pub turn_speed: f32,
+    /// Extra inaccuracy on top of the weapon's own spread (radians).
+    pub aim_error: f32,
+    /// Chance to aim at the head instead of the body.
+    pub headshot_chance: f32,
+    /// Extra pause between shots (seconds).
+    pub shot_pause: f32,
+    /// How far away the bot notices enemies (meters).
+    pub view_range: f32,
+}
+
+impl BotDifficulty {
+    pub const ALL: [BotDifficulty; 4] = [
+        BotDifficulty::Easy,
+        BotDifficulty::Normal,
+        BotDifficulty::Hard,
+        BotDifficulty::Expert,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            BotDifficulty::Easy => "Easy",
+            BotDifficulty::Normal => "Normal",
+            BotDifficulty::Hard => "Hard",
+            BotDifficulty::Expert => "Expert",
+        }
+    }
+
+    pub fn next(self) -> BotDifficulty {
+        let i = Self::ALL.iter().position(|d| *d == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+
+    pub fn skill(self) -> BotSkill {
+        match self {
+            BotDifficulty::Easy => BotSkill {
+                reaction: 1.2,
+                turn_speed: 2.0,
+                aim_error: 0.09,
+                headshot_chance: 0.0,
+                shot_pause: 0.6,
+                view_range: 30.0,
+            },
+            BotDifficulty::Normal => BotSkill {
+                reaction: 0.8,
+                turn_speed: 3.5,
+                aim_error: 0.055,
+                headshot_chance: 0.06,
+                shot_pause: 0.35,
+                view_range: 40.0,
+            },
+            BotDifficulty::Hard => BotSkill {
+                reaction: 0.4,
+                turn_speed: 6.0,
+                aim_error: 0.02,
+                headshot_chance: 0.25,
+                shot_pause: 0.12,
+                view_range: 50.0,
+            },
+            BotDifficulty::Expert => BotSkill {
+                reaction: 0.22,
+                turn_speed: 9.0,
+                aim_error: 0.008,
+                headshot_chance: 0.45,
+                shot_pause: 0.05,
+                view_range: 60.0,
+            },
+        }
+    }
+}

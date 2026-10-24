@@ -157,6 +157,39 @@ pub fn spawn_character(
             cap(&mut b, 0.06);
             b.cube(Vec3::new(0.13, 0.12, 0.13), Vec3::new(0.0, 1.86, 0.11), hair);
         }
+        HairStyle::Afro => {
+            b.cube(Vec3::new(0.4, 0.26, 0.38), Vec3::new(0.0, 1.85, 0.03), hair);
+            for side in [-1.0f32, 1.0] {
+                b.cube(Vec3::new(0.06, 0.16, 0.3), Vec3::new(side * 0.17, 1.7, 0.05), hair);
+            }
+        }
+        HairStyle::Curly => {
+            cap(&mut b, 0.05);
+            // A lumpy layer of small curls.
+            let curls = [(-0.09, -0.08), (0.0, -0.1), (0.09, -0.07), (-0.1, 0.03), (0.02, 0.0), (0.1, 0.04), (-0.05, 0.11), (0.06, 0.12)];
+            for (i, (x, z)) in curls.iter().enumerate() {
+                let y = 1.86 + if i % 2 == 0 { 0.02 } else { 0.0 };
+                b.cube(Vec3::splat(0.09), Vec3::new(*x, y, *z), hair);
+            }
+        }
+        HairStyle::Braids => {
+            cap(&mut b, 0.07);
+            for side in [-1.0f32, 1.0] {
+                b.cube(Vec3::new(0.055, 0.36, 0.055), Vec3::new(side * 0.1, 1.6, 0.15), hair);
+                b.cube(Vec3::splat(0.065), Vec3::new(side * 0.1, 1.41, 0.15), Color::srgb(0.8, 0.1, 0.2));
+            }
+        }
+        HairStyle::SidePart => {
+            cap(&mut b, 0.07);
+            b.cube(Vec3::new(0.28, 0.16, 0.04), Vec3::new(0.0, 1.74, 0.13), hair);
+            // Swept-over fringe on one side.
+            b.cube_rot(
+                Vec3::new(0.18, 0.05, 0.3),
+                Vec3::new(-0.06, 1.87, -0.01),
+                Quat::from_rotation_z(0.25),
+                hair,
+            );
+        }
     }
 
     // Facial hair sits on the front face (z = -0.13); the mouth is at y = 1.6.

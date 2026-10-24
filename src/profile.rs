@@ -28,10 +28,14 @@ pub enum HairStyle {
     Long,
     Ponytail,
     Bun,
+    Afro,
+    Curly,
+    Braids,
+    SidePart,
 }
 
 impl HairStyle {
-    pub const ALL: [HairStyle; 8] = [
+    pub const ALL: [HairStyle; 12] = [
         HairStyle::Bald,
         HairStyle::Buzz,
         HairStyle::Short,
@@ -40,6 +44,10 @@ impl HairStyle {
         HairStyle::Long,
         HairStyle::Ponytail,
         HairStyle::Bun,
+        HairStyle::Afro,
+        HairStyle::Curly,
+        HairStyle::Braids,
+        HairStyle::SidePart,
     ];
 
     pub fn name(self) -> &'static str {
@@ -52,6 +60,10 @@ impl HairStyle {
             HairStyle::Long => "Long",
             HairStyle::Ponytail => "Ponytail",
             HairStyle::Bun => "Bun",
+            HairStyle::Afro => "Afro",
+            HairStyle::Curly => "Curly",
+            HairStyle::Braids => "Braids",
+            HairStyle::SidePart => "Side Part",
         }
     }
 }

@@ -1,6 +1,7 @@
 //! Shared UI building blocks: themed buttons, labels, panels and text inputs.
 
 use bevy::input::keyboard::{Key, KeyboardInput};
+use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::input::ButtonState;
 use bevy::prelude::*;
 
@@ -160,6 +161,42 @@ pub fn panel(width: Val) -> (Node, BackgroundColor, BorderColor) {
         BackgroundColor(BG_PANEL),
         BorderColor::all(BORDER),
     )
+}
+
+/// Scrolls with the mouse wheel while hovered. Used by [`scroll_panel`].
+#[derive(Component, Default)]
+pub struct Scrollable;
+
+/// Like [`panel`] but never taller than its parent; extra content scrolls (handy at low resolutions).
+pub fn scroll_panel(width: Val) -> (Node, BackgroundColor, BorderColor, Scrollable, ScrollPosition) {
+    let (mut node, bg, border) = panel(width);
+    node.max_height = percent(100);
+    node.overflow = Overflow::scroll_y();
+    (node, bg, border, Scrollable, ScrollPosition::default())
+}
+
+fn scroll_wheel(
+    mut wheel: MessageReader<MouseWheel>,
+    cursor: Res<UiCursor>,
+    mut q: Query<(&ComputedNode, &UiGlobalTransform, &mut ScrollPosition), With<Scrollable>>,
+) {
+    let dy: f32 = wheel
+        .read()
+        .map(|w| match w.unit {
+            MouseScrollUnit::Line => w.y * 40.0,
+            MouseScrollUnit::Pixel => w.y,
+        })
+        .sum();
+    let Some(point) = cursor.0 else { return };
+    if dy == 0.0 {
+        return;
+    }
+    for (node, transform, mut scroll) in &mut q {
+        if node.contains_point(*transform, point) {
+            let max = (node.content_size.y - node.size.y).max(0.0) * node.inverse_scale_factor;
+            scroll.y = (scroll.y - dy).clamp(0.0, max);
+        }
+    }
 }
 
 pub fn row() -> Node {
@@ -380,6 +417,7 @@ impl Plugin for WidgetsPlugin {
             .add_systems(
             Update,
             (
+                scroll_wheel,
                 style_buttons,
                 button_sounds,
                 focus_text_inputs,

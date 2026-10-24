@@ -207,7 +207,7 @@ fn open_close(
                 BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
             ))
             .with_children(|root| {
-                root.spawn(panel(px(720))).with_children(|p| {
+                root.spawn(scroll_panel(px(720))).with_children(|p| {
                     p.spawn(Node {
                         justify_content: JustifyContent::SpaceBetween,
                         ..row()

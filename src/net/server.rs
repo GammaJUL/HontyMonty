@@ -9,8 +9,10 @@ use bevy::math::Vec3;
 use bevy::prelude::*;
 
 use super::protocol::*;
+
+mod bots;
 use crate::game_mode::*;
-use crate::map::{self, line_of_sight, ray_player, raycast_map};
+use crate::map::{self, line_of_sight, penetration_cost, ray_player, raycast_map};
 use crate::profile::{Appearance, EquippedSkin};
 use crate::weapons::*;
 
@@ -47,6 +49,8 @@ struct ServerPlayer {
     respawn_at: Option<f32>,
     /// Server time of the last client update (for the ping echo).
     received_at: f32,
+    /// Set for server-controlled bots.
+    bot: Option<bots::Brain>,
 }
 
 impl ServerPlayer {
@@ -125,6 +129,9 @@ pub struct GameServer {
     banned: Vec<IpAddr>,
     /// Rounds needed to win; grows by 3 in overtime.
     win_target: u32,
+    /// Host-chosen player cap (the game mode may allow fewer).
+    player_cap: usize,
+    bot_difficulty: BotDifficulty,
     time: f32,
     snapshot_timer: f32,
     snapshot_count: u64,
@@ -165,6 +172,8 @@ impl GameServer {
                         dropped: Vec::new(),
                         banned: Vec::new(),
                         win_target: 0,
+                        player_cap: 10,
+                        bot_difficulty: BotDifficulty::default(),
                         time: 0.0,
                         snapshot_timer: 0.0,
                         snapshot_count: 0,
@@ -188,13 +197,17 @@ impl GameServer {
         self.players.clear();
     }
 
+    fn max_players(&self) -> usize {
+        self.player_cap.min(self.mode.max_players())
+    }
+
     fn lobby_info(&self) -> LobbyInfo {
         LobbyInfo {
             name: self.name.clone(),
             has_password: !self.password.is_empty(),
             mode: self.mode,
             players: self.players.len(),
-            max_players: self.mode.max_players(),
+            max_players: self.max_players(),
             in_game: self.phase != Phase::Lobby,
             host: self
                 .players
@@ -203,6 +216,7 @@ impl GameServer {
                 .map(|p| p.name.clone())
                 .unwrap_or_default(),
             friendly_fire: self.friendly_fire,
+            bot_difficulty: self.bot_difficulty,
         }
     }
 
@@ -326,7 +340,7 @@ impl GameServer {
         if !self.password.is_empty() && password != self.password {
             return reject(self, "Wrong password");
         }
-        if self.players.len() >= self.mode.max_players() {
+        if self.players.len() >= self.max_players() {
             return reject(self, "Lobby is full");
         }
         let mut name: String = name.trim().chars().take(20).collect();
@@ -373,6 +387,7 @@ impl GameServer {
             spawn_yaw: 0.0,
             respawn_at: None,
             received_at: self.time,
+            bot: None,
         };
         p.reset_loadout();
         if self.mode.is_ffa() && self.phase == Phase::Live {
@@ -396,7 +411,7 @@ impl GameServer {
         let now = self.time;
         let mut left = Vec::new();
         self.players.retain(|p| {
-            let keep = now - p.last_seen < TIMEOUT;
+            let keep = p.bot.is_some() || now - p.last_seen < TIMEOUT;
             if !keep {
                 left.push(p.name.clone());
             }
@@ -477,7 +492,7 @@ impl GameServer {
             dropped: self.dropped.iter().map(|d| d.gun.clone()).collect(),
             win_target: self.win_target,
         };
-        for p in &self.players {
+        for p in self.players.iter().filter(|p| p.bot.is_none()) {
             snap.your_id = p.id;
             snap.ack_cmd = p.last_cmd;
             snap.echo_time = p.state.sent_at;
@@ -548,6 +563,26 @@ impl GameServer {
                     self.send(p.addr, &S2C::Kicked { reason: "You were banned from this lobby".into() });
                     self.event(GameEvent::Info(format!("{} was banned", p.name)));
                     self.check_round_end();
+                }
+            }
+            Cmd::AddBot => {
+                if is_host {
+                    self.add_bot();
+                }
+            }
+            Cmd::RemoveBot => {
+                if is_host {
+                    self.remove_bot();
+                }
+            }
+            Cmd::SetBotDifficulty(d) => {
+                if is_host {
+                    self.bot_difficulty = d;
+                }
+            }
+            Cmd::SetMaxPlayers(n) => {
+                if is_host && self.phase == Phase::Lobby {
+                    self.player_cap = n.clamp(2, 10);
                 }
             }
             Cmd::Drop(w) => {
@@ -793,16 +828,29 @@ impl GameServer {
             }
             let range = if weapon == WeaponId::Knife { knife_range(heavy) } else { def.range };
             let wall = raycast_map(origin, dir, range).unwrap_or(range);
+            // Closest player in range; walls in between are checked for penetration below.
             let mut best: Option<(f32, usize, HitGroup)> = None;
             for (j, v) in self.players.iter().enumerate() {
                 if !v.alive || !self.can_damage(i, j) {
                     continue;
                 }
                 if let Some((t, g)) = ray_player(origin, dir, v.feet(), v.state.crouch)
-                    && t < wall
+                    && t < range
                     && best.is_none_or(|b| t < b.0)
                 {
                     best = Some((t, j, g));
+                }
+            }
+            // Wallbang: thin or soft cover can be shot through for reduced damage.
+            let mut damage_scale = 1.0;
+            if let Some((t, _, _)) = best
+                && t > wall
+            {
+                let cost = penetration_cost(origin, dir, t);
+                if cost < def.penetration {
+                    damage_scale = (1.0 - cost / def.penetration) * 0.75;
+                } else {
+                    best = None;
                 }
             }
             let end = best.map(|b| b.0).unwrap_or(wall);
@@ -825,7 +873,8 @@ impl GameServer {
                     hits.push((j, hp, ar, false));
                 } else {
                     let (hp, ar) = compute_damage(def, t, g, v.armor, v.helmet);
-                    hits.push((j, hp, ar, g == HitGroup::Head));
+                    let scale = |x: i32| (x as f32 * damage_scale).round() as i32;
+                    hits.push((j, scale(hp), scale(ar), g == HitGroup::Head));
                 }
             }
         }
@@ -960,6 +1009,7 @@ impl GameServer {
             for k in 0..self.players.len() {
                 self.spawn(k);
             }
+            self.bots_buy();
             self.event(GameEvent::RoundStart { round: 1 });
         } else {
             self.start_round();
@@ -978,6 +1028,7 @@ impl GameServer {
         for k in 0..self.players.len() {
             self.spawn(k);
         }
+        self.bots_buy();
         self.event(GameEvent::RoundStart { round: self.round });
     }
 
@@ -1165,6 +1216,7 @@ impl GameServer {
             self.update_grenades(dt);
             self.update_fires();
             self.update_pickups();
+            self.update_bots(dt);
         }
     }
 

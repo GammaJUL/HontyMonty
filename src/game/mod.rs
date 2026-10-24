@@ -9,7 +9,9 @@ pub mod pause;
 pub mod player;
 pub mod remote;
 
+use bevy::light::{NotShadowCaster, NotShadowReceiver};
 use bevy::prelude::*;
+use bevy::mesh::VertexAttributeValues;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 use crate::map::{map, BlockKind};
@@ -95,6 +97,32 @@ fn block_material(kind: BlockKind) -> StandardMaterial {
     }
 }
 
+/// Sky dome mesh: a big sphere with vertex colors by height (deep blue zenith, pale
+/// horizon, hazy ground), so no texture coordinates are involved.
+fn sky_mesh(radius: f32) -> Mesh {
+    let zenith = Color::srgb(0.18, 0.38, 0.78);
+    let horizon = Color::srgb(0.72, 0.83, 0.95);
+    let below = Color::srgb(0.62, 0.6, 0.55);
+    let mut mesh: Mesh = Sphere::new(radius).mesh().uv(48, 32);
+    let Some(VertexAttributeValues::Float32x3(positions)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else {
+        return mesh;
+    };
+    let colors: Vec<[f32; 4]> = positions
+        .iter()
+        .map(|p| {
+            let h = p[1] / radius; // -1 bottom .. 1 top
+            let c = if h >= 0.0 {
+                horizon.mix(&zenith, h.powf(0.6))
+            } else {
+                horizon.mix(&below, (-h / 0.15).min(1.0))
+            };
+            c.to_linear().to_f32_array()
+        })
+        .collect();
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    mesh
+}
+
 fn spawn_world(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -104,6 +132,20 @@ fn spawn_world(
 ) {
     *ui = GameUi::default();
     ambient.brightness = 350.0;
+    // Sky dome: a huge sphere seen from the inside, painted with a vertical gradient.
+    commands.spawn((
+        InGameEntity,
+        Mesh3d(meshes.add(sky_mesh(500.0))),
+        MeshMaterial3d(mats.add(StandardMaterial {
+            unlit: true,
+            cull_mode: None,
+            fog_enabled: false,
+            ..default()
+        })),
+        Transform::default(),
+        NotShadowCaster,
+        NotShadowReceiver,
+    ));
     let kinds = [
         BlockKind::Floor,
         BlockKind::Wall,

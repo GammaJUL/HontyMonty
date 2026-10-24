@@ -68,7 +68,7 @@ fn spawn(mut commands: Commands) {
             },
         ))
         .with_children(|root| {
-            root.spawn(panel(px(460))).with_children(|p| {
+            root.spawn(scroll_panel(px(460))).with_children(|p| {
                 title(p, "Customize Character");
                 for (field, name) in FIELDS {
                     p.spawn(Node {

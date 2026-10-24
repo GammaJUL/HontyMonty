@@ -27,8 +27,14 @@ enum InvButton {
     EquipResult,
     Filter(Option<Rarity>),
     DeleteMode,
+    SelectCase(usize),
+    TradeUpMode,
+    ConfirmTradeUp,
     Back,
 }
+
+#[derive(Component)]
+struct CaseContents;
 
 #[derive(Component)]
 struct HintText;
@@ -72,6 +78,11 @@ struct CaseUi {
     filter: Option<Rarity>,
     /// Clicking an item deletes it instead of equipping it.
     delete_mode: bool,
+    /// Index into `CASES`.
+    case: usize,
+    /// Clicking items selects them for a trade-up contract.
+    trade_mode: bool,
+    trade_selected: Vec<u64>,
 }
 
 pub fn plugin(app: &mut App) {
@@ -100,8 +111,12 @@ fn spawn(mut commands: Commands) {
             },
         ))
         .with_children(|root| {
-            root.spawn(panel(px(REEL_W + 44.0))).with_children(|p| {
-                title(p, CASE_NAME);
+            root.spawn(scroll_panel(px(REEL_W + 44.0))).with_children(|p| {
+                p.spawn(row()).with_children(|r| {
+                    for (i, case) in CASES.iter().enumerate() {
+                        button_sized(r, case.name, InvButton::SelectCase(i), px(170), 36.0, 17.0);
+                    }
+                });
                 label(p, "Unlimited free openings. Same odds as a CS2 case:", 16.0, TEXT_DIM);
                 for r in Rarity::ALL {
                     p.spawn(row()).with_children(|rw| {
@@ -114,11 +129,11 @@ fn spawn(mut commands: Commands) {
                             },
                             BackgroundColor(rgb(r.color())),
                         ));
-                        let count = skins_of(r).count();
                         label(rw, format!("{:<20}", r.name()), 16.0, rgb(r.color()));
-                        label(rw, format!("{:.2}%   ({count} items)", r.odds()), 16.0, TEXT_DIM);
+                        label(rw, format!("{:.2}%", r.odds()), 16.0, TEXT_DIM);
                     });
                 }
+                p.spawn((CaseContents, Text::new(""), font(14.0), TextColor(TEXT_DIM)));
                 label(p, "StatTrak chance: 10%   |   Wear: Factory New -> Battle-Scarred", 14.0, TEXT_DIM);
                 // The reel.
                 p.spawn((
@@ -175,7 +190,7 @@ fn spawn(mut commands: Commands) {
                 ));
                 button(p, "Back", InvButton::Back, px(120));
             });
-            root.spawn(panel(px(560))).with_children(|p| {
+            root.spawn(scroll_panel(px(560))).with_children(|p| {
                 title(p, "Inventory");
                 p.spawn((StatsText, Text::new(""), font(15.0), TextColor(TEXT_DIM)));
                 p.spawn(row()).with_children(|r| {
@@ -192,6 +207,10 @@ fn spawn(mut commands: Commands) {
                         r.commands().entity(b).insert(BorderColor::all(rgb(rarity.color())));
                     }
                     button_sized(r, "Delete mode", InvButton::DeleteMode, px(132), 28.0, 13.0);
+                });
+                p.spawn(row()).with_children(|r| {
+                    button_sized(r, "Trade-up mode", InvButton::TradeUpMode, px(150), 28.0, 13.0);
+                    button_sized(r, "Confirm trade-up", InvButton::ConfirmTradeUp, px(170), 28.0, 13.0);
                 });
                 p.spawn((HintText, Text::new(""), font(14.0), TextColor(TEXT_DIM)));
                 p.spawn((
@@ -225,12 +244,12 @@ fn start_spin(
     let mut rng = ui.rng.take().unwrap_or_default();
     let uid = profile.next_uid;
     profile.next_uid += 1;
-    let item = open_case(&mut rng, uid);
+    let item = open_case(&mut rng, ui.case, uid);
     // Filler items are rolled with the same odds so the reel looks honest.
     let mut reel: Vec<(&'static SkinDef, f32)> = (0..REEL_LEN)
         .map(|_| {
             let r = roll_rarity(&mut rng);
-            (random_skin_of(&mut rng, r), 0.1)
+            (random_skin_of(&mut rng, ui.case, r), 0.1)
         })
         .collect();
     reel[WINNER_AT] = (item.def(), item.float);
@@ -336,7 +355,7 @@ fn handle(
                     let mut rng = ui.rng.take().unwrap_or_default();
                     let uid = profile.next_uid;
                     profile.next_uid += 1;
-                    let item = open_case(&mut rng, uid);
+                    let item = open_case(&mut rng, ui.case, uid);
                     ui.rng = Some(rng);
                     sfx.write(PlaySfx::ui(Sound::Reveal(item.def().rarity)));
                     finish(&mut ui, &mut profile, item);
@@ -347,6 +366,20 @@ fn handle(
                     profile.inventory.retain(|s| s.uid != uid);
                     profile.equipped.retain(|_, equipped| *equipped != uid);
                     profile.save();
+                } else if ui.trade_mode {
+                    // Select up to 10 items of one rarity below Covert.
+                    let rarity = |uid: u64| profile.inventory.iter().find(|s| s.uid == uid).map(|s| s.def().rarity);
+                    if let Some(pos) = ui.trade_selected.iter().position(|u| *u == uid) {
+                        ui.trade_selected.remove(pos);
+                    } else {
+                        let r = rarity(uid);
+                        let same = ui.trade_selected.first().is_none_or(|first| rarity(*first) == r);
+                        if same && r.is_some_and(|r| r < Rarity::Covert) && ui.trade_selected.len() < TRADE_UP_COUNT {
+                            ui.trade_selected.push(uid);
+                        } else {
+                            sfx.write(PlaySfx::ui(Sound::Deny));
+                        }
+                    }
                 } else {
                     toggle_equip(&mut profile, uid);
                 }
@@ -359,6 +392,48 @@ fn handle(
             }
             InvButton::DeleteMode => {
                 ui.delete_mode = !ui.delete_mode;
+                ui.trade_mode = false;
+                ui.trade_selected.clear();
+                ui.dirty = true;
+            }
+            InvButton::SelectCase(i) => {
+                if ui.spin.is_none() {
+                    ui.case = i;
+                    ui.dirty = true;
+                }
+            }
+            InvButton::TradeUpMode => {
+                ui.trade_mode = !ui.trade_mode;
+                ui.delete_mode = false;
+                ui.trade_selected.clear();
+                ui.dirty = true;
+            }
+            InvButton::ConfirmTradeUp => {
+                let inputs: Vec<OwnedSkin> = profile
+                    .inventory
+                    .iter()
+                    .filter(|s| ui.trade_selected.contains(&s.uid))
+                    .cloned()
+                    .collect();
+                let mut rng = ui.rng.take().unwrap_or_default();
+                let uid = profile.next_uid;
+                let result = trade_up(&mut rng, &inputs, uid);
+                ui.rng = Some(rng);
+                match result {
+                    Some(item) => {
+                        profile.next_uid += 1;
+                        let used = std::mem::take(&mut ui.trade_selected);
+                        profile.inventory.retain(|s| !used.contains(&s.uid));
+                        profile.equipped.retain(|_, uid| !used.contains(uid));
+                        sfx.write(PlaySfx::ui(Sound::Reveal(item.def().rarity)));
+                        profile.inventory.push(item.clone());
+                        profile.save();
+                        ui.last = Some(item);
+                    }
+                    None => {
+                        sfx.write(PlaySfx::ui(Sound::Deny));
+                    }
+                }
                 ui.dirty = true;
             }
             InvButton::EquipResult => {
@@ -476,12 +551,13 @@ fn rebuild_grid(
     mut ui: ResMut<CaseUi>,
     profile: Res<Profile>,
     grid: Query<Entity, With<Grid>>,
-    mut page_text: Query<&mut Text, (With<PageText>, Without<StatsText>, Without<HintText>)>,
-    mut stats: Query<&mut Text, (With<StatsText>, Without<PageText>, Without<HintText>)>,
+    mut page_text: Query<&mut Text, (With<PageText>, Without<StatsText>, Without<HintText>, Without<CaseContents>)>,
+    mut stats: Query<&mut Text, (With<StatsText>, Without<PageText>, Without<HintText>, Without<CaseContents>)>,
+    mut contents: Query<&mut Text, (With<CaseContents>, Without<PageText>, Without<StatsText>, Without<HintText>)>,
     mut images: ResMut<Assets<Image>>,
     mut textures: ResMut<SkinTextures>,
     buttons: Query<(Entity, &InvButton)>,
-    mut hint: Query<&mut Text, (With<HintText>, Without<PageText>, Without<StatsText>)>,
+    mut hint: Query<&mut Text, (With<HintText>, Without<PageText>, Without<StatsText>, Without<CaseContents>)>,
 ) {
     if !ui.dirty {
         return;
@@ -491,6 +567,8 @@ fn rebuild_grid(
         let on = match b {
             InvButton::Filter(f) => *f == ui.filter,
             InvButton::DeleteMode => ui.delete_mode,
+            InvButton::TradeUpMode => ui.trade_mode,
+            InvButton::SelectCase(i) => *i == ui.case,
             _ => continue,
         };
         if on {
@@ -499,9 +577,21 @@ fn rebuild_grid(
             commands.entity(e).remove::<Selected>();
         }
     }
+    if let Ok(mut t) = contents.single_mut() {
+        let counts: Vec<String> = Rarity::ALL
+            .iter()
+            .map(|r| format!("{} {}", skins_of(ui.case, *r).count(), r.name()))
+            .collect();
+        t.0 = format!("{} contains: {}", CASES[ui.case].name, counts.join(", "));
+    }
     if let Ok(mut t) = hint.single_mut() {
         t.0 = if ui.delete_mode {
             "DELETE MODE: clicking an item deletes it forever.".into()
+        } else if ui.trade_mode {
+            format!(
+                "TRADE-UP: pick {TRADE_UP_COUNT} items of the same rarity (Mil-Spec to Classified), then Confirm. Selected {}/{TRADE_UP_COUNT}",
+                ui.trade_selected.len()
+            )
         } else {
             "Click an item to equip / unequip it.".into()
         };
@@ -536,6 +626,7 @@ fn rebuild_grid(
         .take(PAGE_SIZE)
         .cloned()
         .collect();
+    let picked_for_trade = ui.trade_selected.clone();
     commands.entity(grid).with_children(|g| {
         if page.is_empty() {
             g.spawn((
@@ -553,6 +644,7 @@ fn rebuild_grid(
             let equipped = profile.equipped.get(&def.weapon) == Some(&item.uid);
             let color = rgb(def.rarity.color());
             let tex = textures.get(&mut images, def, item.float, item.pattern_seed);
+            let picked = picked_for_trade.contains(&item.uid);
             let mut e = g.spawn((
                 UiButton,
                 InvButton::Card(item.uid),
@@ -570,7 +662,14 @@ fn rebuild_grid(
                     ..BorderColor::all(if equipped { ACCENT } else { BORDER })
                 },
             ));
+            if picked {
+                // Thick outline so trade-up picks stand out.
+                e.insert(Outline::new(px(3), px(2), ACCENT));
+            }
             e.with_children(|c| {
+                if picked {
+                    label(c, "SELECTED", 13.0, ACCENT);
+                }
                 c.spawn((
                     ImageNode {
                         image_mode: NodeImageMode::Stretch,

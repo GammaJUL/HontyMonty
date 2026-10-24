@@ -84,6 +84,8 @@ pub struct WeaponDef {
     pub zoom_fovs: &'static [f32],
     /// Spread used while scoped (replaces base_spread).
     pub scoped_spread: f32,
+    /// Wallbang power, compared against `map::penetration_cost` (0 = can't shoot through anything).
+    pub penetration: f32,
 }
 
 impl WeaponId {
@@ -119,6 +121,7 @@ const fn base() -> WeaponDef {
         scope: ScopeStyle::None,
         zoom_fovs: &[],
         scoped_spread: 0.0,
+        penetration: 1.0,
     }
 }
 
@@ -143,6 +146,7 @@ pub static WEAPONS: [WeaponDef; 13] = [
         jump_spread: 0.0,
         recoil_spread: 0.0,
         recoil_kick: 0.0,
+        penetration: 0.0,
         ..base()
     },
     WeaponDef {
@@ -188,6 +192,7 @@ pub static WEAPONS: [WeaponDef; 13] = [
         move_spread: 0.07,
         recoil_spread: 0.01,
         recoil_kick: 0.04,
+        penetration: 2.0,
         ..base()
     },
     WeaponDef {
@@ -258,6 +263,7 @@ pub static WEAPONS: [WeaponDef; 13] = [
         jump_spread: 0.08,
         recoil_spread: 0.0,
         recoil_kick: 0.05,
+        penetration: 0.5,
         ..base()
     },
     WeaponDef {
@@ -280,6 +286,7 @@ pub static WEAPONS: [WeaponDef; 13] = [
         jump_spread: 0.25,
         recoil_spread: 0.0045,
         recoil_kick: 0.011,
+        penetration: 2.0,
         ..base()
     },
     WeaponDef {
@@ -302,6 +309,7 @@ pub static WEAPONS: [WeaponDef; 13] = [
         jump_spread: 0.25,
         recoil_spread: 0.0038,
         recoil_kick: 0.009,
+        penetration: 2.0,
         ..base()
     },
     WeaponDef {
@@ -327,6 +335,7 @@ pub static WEAPONS: [WeaponDef; 13] = [
         scope: ScopeStyle::Rifle,
         zoom_fovs: &[45.0],
         scoped_spread: 0.0015,
+        penetration: 2.0,
         ..base()
     },
     WeaponDef {
@@ -352,6 +361,7 @@ pub static WEAPONS: [WeaponDef; 13] = [
         scope: ScopeStyle::Rifle,
         zoom_fovs: &[45.0],
         scoped_spread: 0.0015,
+        penetration: 2.0,
         ..base()
     },
     WeaponDef {
@@ -376,6 +386,7 @@ pub static WEAPONS: [WeaponDef; 13] = [
         scope: ScopeStyle::Sniper,
         zoom_fovs: &[40.0, 15.0],
         scoped_spread: 0.0008,
+        penetration: 2.2,
         ..base()
     },
     WeaponDef {
@@ -401,6 +412,7 @@ pub static WEAPONS: [WeaponDef; 13] = [
         scope: ScopeStyle::Sniper,
         zoom_fovs: &[40.0, 10.0],
         scoped_spread: 0.0005,
+        penetration: 2.8,
         ..base()
     },
 ];

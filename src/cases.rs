@@ -225,7 +225,7 @@ use Rarity::*;
 use WeaponId as W;
 
 /// Contents of the Honty Case.
-pub static SKINS: [SkinDef; 21] = [
+pub static SKINS: [SkinDef; 39] = [
     // Mil-Spec
     s(1, W::Glock, "Neon Drip", MilSpec, [0.1, 0.1, 0.12], [0.2, 1.0, 0.6], Stripes),
     s(2, W::Usp, "Tidewater", MilSpec, [0.1, 0.3, 0.45], [0.6, 0.85, 0.9], Camo),
@@ -252,9 +252,47 @@ pub static SKINS: [SkinDef; 21] = [
     knife(19, KnifeModel::Butterfly, "Tiger Tooth", [1.0, 0.65, 0.1], [0.3, 0.12, 0.02], Tiger, 0.0, 0.08),
     knife(20, KnifeModel::Bayonet, "Slaughter", [0.85, 0.2, 0.25], [0.95, 0.85, 0.85], Camo, 0.01, 0.26),
     knife(21, KnifeModel::Bayonet, "Night", [0.12, 0.13, 0.18], [0.3, 0.32, 0.4], Stripes, 0.06, 0.8),
+    // ---- Dusk Case
+    // Mil-Spec
+    s(22, W::Mp9, "Sunset Grid", MilSpec, [0.95, 0.45, 0.15], [0.35, 0.15, 0.45], Pixel),
+    s(23, W::Glock, "Dusk Camo", MilSpec, [0.3, 0.22, 0.35], [0.65, 0.4, 0.3], Camo),
+    s(24, W::Nova, "Driftwood", MilSpec, [0.55, 0.45, 0.35], [0.35, 0.28, 0.22], Stripes),
+    s(25, W::P90, "Twilight", MilSpec, [0.2, 0.15, 0.45], [0.95, 0.55, 0.3], Fade),
+    s(26, W::Usp, "Smog", MilSpec, [0.4, 0.42, 0.45], [0.25, 0.26, 0.28], Camo),
+    // Restricted
+    s(27, W::Aug, "Afterglow", Restricted, [1.0, 0.5, 0.2], [0.6, 0.1, 0.5], Fade),
+    s(28, W::Sg553, "Night Ops", Restricted, [0.08, 0.1, 0.14], [0.2, 0.6, 1.0], Circuit),
+    s(29, W::Deagle, "Copper Web", Restricted, [0.7, 0.4, 0.2], [0.25, 0.12, 0.05], Web),
+    s(30, W::Ssg08, "Dune Tiger", Restricted, [0.85, 0.7, 0.45], [0.35, 0.22, 0.1], Tiger),
+    // Classified
+    s(31, W::M4a4, "Neon Rider", Classified, [0.1, 0.05, 0.2], [1.0, 0.2, 0.7], Stripes),
+    s(32, W::Ak47, "Ultraviolet", Classified, [0.3, 0.1, 0.55], [0.75, 0.5, 1.0], Pixel),
+    s(33, W::Mp9, "Starlight", Classified, [0.05, 0.08, 0.25], [0.9, 0.9, 1.0], Doppler),
+    // Covert
+    s(34, W::M4a4, "Howling Dusk", Covert, [0.9, 0.35, 0.1], [0.15, 0.05, 0.05], Tiger),
+    s(35, W::Awp, "Midnight Fade", Covert, [0.1, 0.1, 0.4], [0.9, 0.3, 0.8], Fade),
+    // Rare special
+    knife(36, KnifeModel::Karambit, "Marble Fade", [1.0, 0.15, 0.1], [0.15, 0.3, 1.0], Doppler, 0.0, 0.08),
+    knife(37, KnifeModel::Butterfly, "Gamma Doppler", [0.05, 0.4, 0.15], [0.5, 1.0, 0.4], Doppler, 0.0, 0.08),
+    knife(38, KnifeModel::Bayonet, "Tiger Tooth", [1.0, 0.65, 0.1], [0.3, 0.12, 0.02], Tiger, 0.0, 0.08),
+    knife(39, KnifeModel::Karambit, "Crimson Web", [0.6, 0.02, 0.05], [0.05, 0.02, 0.02], Web, 0.06, 0.8),
 ];
 
-pub const CASE_NAME: &str = "Honty Case";
+pub struct CaseDef {
+    pub name: &'static str,
+    /// Skin ids in this case's collection.
+    pub skins: std::ops::RangeInclusive<u16>,
+}
+
+pub static CASES: [CaseDef; 2] = [
+    CaseDef { name: "Honty Case", skins: 1..=21 },
+    CaseDef { name: "Dusk Case", skins: 22..=39 },
+];
+
+/// Which case a skin comes from.
+pub fn case_of(skin_id: u16) -> usize {
+    CASES.iter().position(|c| c.skins.contains(&skin_id)).unwrap_or(0)
+}
 
 /// A rolled item in a player's inventory.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -295,13 +333,15 @@ pub fn roll_rarity(rng: &mut fastrand::Rng) -> Rarity {
     Rarity::MilSpec
 }
 
-pub fn skins_of(rarity: Rarity) -> impl Iterator<Item = &'static SkinDef> {
-    SKINS.iter().filter(move |s| s.rarity == rarity)
+pub fn skins_of(case: usize, rarity: Rarity) -> impl Iterator<Item = &'static SkinDef> {
+    SKINS
+        .iter()
+        .filter(move |s| s.rarity == rarity && CASES[case].skins.contains(&s.id))
 }
 
 /// Pick a random item of the given rarity (used for the reel filler too).
-pub fn random_skin_of(rng: &mut fastrand::Rng, rarity: Rarity) -> &'static SkinDef {
-    let pool: Vec<_> = skins_of(rarity).collect();
+pub fn random_skin_of(rng: &mut fastrand::Rng, case: usize, rarity: Rarity) -> &'static SkinDef {
+    let pool: Vec<_> = skins_of(case, rarity).collect();
     pool[rng.usize(..pool.len())]
 }
 
@@ -323,9 +363,9 @@ pub fn roll_float(rng: &mut fastrand::Rng, def: &SkinDef) -> f32 {
 }
 
 /// Open the case once. Unlimited rolls, no keys needed.
-pub fn open_case(rng: &mut fastrand::Rng, uid: u64) -> OwnedSkin {
+pub fn open_case(rng: &mut fastrand::Rng, case: usize, uid: u64) -> OwnedSkin {
     let rarity = roll_rarity(rng);
-    let def = random_skin_of(rng, rarity);
+    let def = random_skin_of(rng, case, rarity);
     OwnedSkin {
         uid,
         skin_id: def.id,
@@ -335,6 +375,30 @@ pub fn open_case(rng: &mut fastrand::Rng, uid: u64) -> OwnedSkin {
         kills: 0,
     }
 }
+
+/// Trade-up contract: 10 items of the same rarity (Mil-Spec to Classified) become one
+/// item of the next rarity, from the collection of a randomly chosen input. The float is
+/// the inputs' average, StatTrak only if every input was StatTrak.
+pub fn trade_up(rng: &mut fastrand::Rng, inputs: &[OwnedSkin], uid: u64) -> Option<OwnedSkin> {
+    let rarity = inputs.first()?.def().rarity;
+    if inputs.len() != TRADE_UP_COUNT || rarity >= Rarity::Covert || inputs.iter().any(|s| s.def().rarity != rarity) {
+        return None;
+    }
+    let next = Rarity::ALL[rarity as usize + 1];
+    let case = case_of(inputs[rng.usize(..inputs.len())].skin_id);
+    let def = random_skin_of(rng, case, next);
+    let avg = inputs.iter().map(|s| s.float).sum::<f32>() / inputs.len() as f32;
+    Some(OwnedSkin {
+        uid,
+        skin_id: def.id,
+        float: def.min_float + avg.clamp(0.0, 1.0) * (def.max_float - def.min_float),
+        stattrak: inputs.iter().all(|s| s.stattrak),
+        pattern_seed: rng.u16(0..1000),
+        kills: 0,
+    })
+}
+
+pub const TRADE_UP_COUNT: usize = 10;
 
 #[cfg(test)]
 mod tests {
@@ -348,14 +412,17 @@ mod tests {
 
     #[test]
     fn every_rarity_has_items_and_rolls_match_odds() {
-        for r in Rarity::ALL {
-            assert!(skins_of(r).count() > 0, "{r:?} has no skins");
+        for case in 0..CASES.len() {
+            for r in Rarity::ALL {
+                assert!(skins_of(case, r).count() > 0, "{} has no {r:?} skins", CASES[case].name);
+            }
         }
         let mut rng = fastrand::Rng::with_seed(42);
         let n = 200_000;
         let mut counts = [0usize; 5];
         for i in 0..n {
-            let item = open_case(&mut rng, i as u64);
+            let item = open_case(&mut rng, i % CASES.len(), i as u64);
+            assert_eq!(case_of(item.skin_id), i % CASES.len());
             counts[item.def().rarity as usize] += 1;
             let d = item.def();
             assert!(item.float >= d.min_float && item.float <= d.max_float);
@@ -364,5 +431,17 @@ mod tests {
             let got = counts[r as usize] as f32 / n as f32 * 100.0;
             assert!((got - r.odds()).abs() < r.odds() * 0.15 + 0.05, "{r:?}: {got}% vs {}%", r.odds());
         }
+    }
+
+    #[test]
+    fn trade_up_gives_next_rarity() {
+        let mut rng = fastrand::Rng::with_seed(1);
+        let inputs: Vec<OwnedSkin> = (0..10)
+            .map(|i| OwnedSkin { uid: i, skin_id: 1, float: 0.2, stattrak: true, pattern_seed: 0, kills: 0 })
+            .collect();
+        let out = trade_up(&mut rng, &inputs, 99).unwrap();
+        assert_eq!(out.def().rarity, Rarity::Restricted);
+        assert!(out.stattrak);
+        assert!(trade_up(&mut rng, &inputs[..9], 100).is_none());
     }
 }

@@ -43,6 +43,16 @@ impl Aabb {
             && self.max.z > o.min.z
     }
 
+    /// Entry and exit distances along a normalized ray, if it hits.
+    pub fn ray_span(&self, origin: Vec3, dir: Vec3) -> Option<(f32, f32)> {
+        let inv = dir.recip();
+        let t1 = (self.min - origin) * inv;
+        let t2 = (self.max - origin) * inv;
+        let tmin = t1.min(t2).max_element();
+        let tmax = t1.max(t2).min_element();
+        (tmax >= tmin.max(0.0)).then_some((tmin.max(0.0), tmax))
+    }
+
     /// Slab test. Returns the entry distance along `dir` (normalized).
     pub fn ray(&self, origin: Vec3, dir: Vec3) -> Option<f32> {
         let inv = dir.recip();
@@ -187,6 +197,30 @@ pub fn raycast_map(origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
         .filter_map(|b| b.aabb.ray(origin, dir))
         .filter(|t| *t <= max)
         .min_by(|a, b| a.total_cmp(b))
+}
+
+impl BlockKind {
+    /// How hard this material is to shoot through, per meter.
+    pub fn penetration_cost(self) -> f32 {
+        match self {
+            BlockKind::Crate => 1.0,
+            BlockKind::Metal => 2.5,
+            BlockKind::Concrete | BlockKind::Wall | BlockKind::Floor => 4.0,
+        }
+    }
+}
+
+/// Total penetration cost of everything between `origin` and `origin + dir * max_t`.
+pub fn penetration_cost(origin: Vec3, dir: Vec3, max_t: f32) -> f32 {
+    map()
+        .blocks
+        .iter()
+        .filter_map(|b| {
+            let (enter, exit) = b.aabb.ray_span(origin, dir)?;
+            let thickness = exit.min(max_t) - enter;
+            (enter < max_t && thickness > 0.0).then(|| thickness * b.kind.penetration_cost())
+        })
+        .sum()
 }
 
 pub fn line_of_sight(a: Vec3, b: Vec3) -> bool {

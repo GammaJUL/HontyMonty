@@ -3,11 +3,12 @@
 Ideas and known gaps, roughly ordered by impact. Tick items off as they land.
 
 ## Gameplay
-- [ ] Bots (fill empty slots, practice offline)
+- [x] Bots (host adds them in the lobby; they buy, roam, react and shoot)
+- [ ] Smarter bots: grenades, crouching, navigation around walls, difficulty setting
 - [x] Spectator camera when dead (cycle through alive teammates)
 - [ ] Bomb plant/defuse objective mode (Alpha attacks, Bravo defends) + side swap at half-time
 - [x] Drop / pick up weapons (G key), dropped guns on death, buying drops your old gun
-- [ ] Wallbangs (penetration through thin walls / crates with damage falloff)
+- [x] Wallbangs (crates and thin metal, depending on weapon power)
 - [x] Real spray patterns per weapon (AK, M4/AUG/SG, SMGs)
 - [x] Knife right-click heavy stab and backstab damage
 - [x] Player-vs-player collision
@@ -35,12 +36,14 @@ Ideas and known gaps, roughly ordered by impact. Tick items off as they land.
 - [ ] Host migration when the host leaves
 - [x] Kick button for the host
 - [x] Ban button for the host (by IP, for the lobby's lifetime)
-- [ ] Lobby max-players setting, unban
+- [x] Lobby max-players setting
+- [ ] Unban
 
 ## Cases & inventory
-- [ ] More cases, each with its own collection
+- [x] Second case (Dusk Case) with its own collection
+- [ ] More cases
 - [ ] Gloves as rare special items
-- [ ] Trade-up contract (10 items -> 1 of the next rarity)
+- [x] Trade-up contract (10 items -> 1 of the next rarity)
 - [ ] Inspect view (3D weapon preview rotating in the inventory)
 - [x] StatTrak kill counters that count up in matches
 - [x] Pattern seeds affecting the texture (8 variants per skin)
@@ -52,7 +55,8 @@ Ideas and known gaps, roughly ordered by impact. Tick items off as they land.
 
 ## Character
 - [x] Facial hair, glasses/sunglasses, caps, beanies, headbands
-- [ ] More hairstyles, body types
+- [x] More hairstyles (afro, curly, braids, side part)
+- [ ] Body types
 - [ ] Animated characters (walk cycle, crouch, reload)
 - [ ] Agent skins (team-specific outfits)
 
@@ -63,6 +67,7 @@ Ideas and known gaps, roughly ordered by impact. Tick items off as they land.
 - [ ] Gamepad support
 - [x] Brightness, shadows on/off, MSAA settings
 - [x] Replace the deprecated `Interaction` (own hit-testing, works with the low-res render target)
+- [x] Scrollable menu panels (for low resolutions)
 - [ ] Loading screen + tooltips
 - [ ] Localisation
 
@@ -73,9 +78,9 @@ Ideas and known gaps, roughly ordered by impact. Tick items off as they land.
 - [x] Shell casings, blood puffs
 - [ ] Blood decals on walls
 - [ ] Better weapon and knife models
-- [ ] Skybox
+- [x] Gradient sky dome
 
 ## Tech
 - [ ] CI running `cargo test` and `cargo clippy`
 - [x] Tests for overtime, drop/pickup and bans
-- [ ] More tests for FFA respawns and grenades
+- [x] Tests for FFA respawns, HE grenades, wallbangs and bots

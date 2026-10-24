@@ -15,6 +15,10 @@ enum LobbyButton {
     ModeNext,
     Start,
     FriendlyFire,
+    AddBot,
+    RemoveBot,
+    MaxPlayers(i32),
+    BotDifficulty,
     Kick(PlayerId),
     Ban(PlayerId),
     Leave,
@@ -51,7 +55,7 @@ fn spawn(mut commands: Commands) {
             },
         ))
         .with_children(|root| {
-            root.spawn(panel(px(720))).with_children(|p| {
+            root.spawn(scroll_panel(px(720))).with_children(|p| {
                 p.spawn((HeaderText, Text::new("Connecting..."), font(26.0), TextColor(ACCENT)));
                 p.spawn((
                     Roster,
@@ -79,6 +83,22 @@ fn spawn(mut commands: Commands) {
                     button_sized(r, "< Mode", LobbyButton::ModePrev, px(90), 38.0, 16.0);
                     button_sized(r, "Mode >", LobbyButton::ModeNext, px(90), 38.0, 16.0);
                     button_sized(r, "Friendly Fire", LobbyButton::FriendlyFire, px(140), 38.0, 16.0);
+                });
+                p.spawn((
+                    HostControls,
+                    Node {
+                        margin: UiRect::top(px(4)),
+                        ..row()
+                    },
+                ))
+                .with_children(|r| {
+                    label(r, "Bots:", 16.0, TEXT_DIM);
+                    button_sized(r, "+ Add Bot", LobbyButton::AddBot, px(120), 38.0, 16.0);
+                    button_sized(r, "- Remove Bot", LobbyButton::RemoveBot, px(140), 38.0, 16.0);
+                    button_sized(r, "Difficulty", LobbyButton::BotDifficulty, px(110), 38.0, 16.0);
+                    label(r, "Max players:", 16.0, TEXT_DIM);
+                    button_sized(r, "-", LobbyButton::MaxPlayers(-1), px(36), 38.0, 16.0);
+                    button_sized(r, "+", LobbyButton::MaxPlayers(1), px(36), 38.0, 16.0);
                     button_sized(r, "START MATCH", LobbyButton::Start, px(200), 44.0, 20.0);
                 });
                 p.spawn(Node {
@@ -117,6 +137,16 @@ fn handle(
             }
             LobbyButton::Start => c.send_cmd(Cmd::StartMatch),
             LobbyButton::FriendlyFire => c.send_cmd(Cmd::SetFriendlyFire(!ff)),
+            LobbyButton::BotDifficulty => {
+                let current = c.snapshot.as_ref().map(|s| s.lobby.bot_difficulty).unwrap_or_default();
+                c.send_cmd(Cmd::SetBotDifficulty(current.next()));
+            }
+            LobbyButton::AddBot => c.send_cmd(Cmd::AddBot),
+            LobbyButton::RemoveBot => c.send_cmd(Cmd::RemoveBot),
+            LobbyButton::MaxPlayers(d) => {
+                let current = c.snapshot.as_ref().map(|s| s.lobby.max_players).unwrap_or(10) as i32;
+                c.send_cmd(Cmd::SetMaxPlayers((current + d).clamp(2, 10) as usize));
+            }
             LobbyButton::Kick(id) => c.send_cmd(Cmd::Kick(id)),
             LobbyButton::Ban(id) => c.send_cmd(Cmd::Ban(id)),
             LobbyButton::Leave => {
@@ -151,19 +181,22 @@ fn refresh(
     let i_am_host = c.is_host();
     let mode = snap.lobby.mode;
     let head = format!(
-        "{}  -  {}{}\nFriendly fire: {}",
+        "{}  -  {}{}\nPlayers {}/{}  |  Friendly fire: {}  |  Bots: {}",
         snap.lobby.name,
         mode.name(),
         if snap.lobby.has_password { "  (password protected)" } else { "" },
-        if snap.lobby.friendly_fire { "ON" } else { "off" }
+        snap.lobby.players,
+        snap.lobby.max_players,
+        if snap.lobby.friendly_fire { "ON" } else { "off" },
+        snap.lobby.bot_difficulty.name()
     );
     if let Ok(mut t) = header.single_mut()
         && t.0 != head
     {
         t.0 = head;
     }
-    if let Ok(mut n) = host_controls.single_mut() {
-        let d = if c.is_host() { Display::Flex } else { Display::None };
+    let d = if c.is_host() { Display::Flex } else { Display::None };
+    for mut n in &mut host_controls {
         if n.display != d {
             n.display = d;
         }

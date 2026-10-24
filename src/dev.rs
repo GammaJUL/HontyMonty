@@ -4,6 +4,7 @@
 //! * `HONTY_DEV_STATE=ingame` hosts a lobby and starts the match right away.
 //! * `HONTY_DEV_STATE=host` hosts a lobby and starts once a second player joined;
 //!   `HONTY_DEV_STATE=join` (in a second instance) joins 127.0.0.1:27015.
+//! * `HONTY_DEV_BOTS=<n>` adds that many bots before the dev match starts.
 //! * `HONTY_DEV_MODE=1v1|2v2|5v5|ffa` picks the mode when hosting.
 //! * `HONTY_DEV_SETTINGS=1` opens the settings overlay.
 //! * `HONTY_DEV_SMOKE=<meters>` pops a smoke that far in front of the spawn (0 = on top of you).
@@ -117,6 +118,9 @@ fn drive(
         };
         if go {
             *started = true;
+            for _ in 0..env("HONTY_DEV_BOTS").parse::<usize>().unwrap_or(0) {
+                c.send_cmd(Cmd::AddBot);
+            }
             c.send_cmd(Cmd::StartMatch);
         }
     }

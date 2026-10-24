@@ -10,11 +10,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::game_mode::{GameMode, Phase, Team};
+use crate::game_mode::{BotDifficulty, GameMode, Phase, Team};
 use crate::profile::{Appearance, EquippedSkin};
 use crate::weapons::{DamageSource, GrenadeKind, ShopItem, WeaponId};
 
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 6;
 pub const DEFAULT_PORT: u16 = 27015;
 /// Ports scanned by the lobby browser.
 pub const PORT_RANGE: std::ops::Range<u16> = 27015..27020;
@@ -34,6 +34,8 @@ pub struct LobbyInfo {
     pub host: String,
     #[serde(default)]
     pub friendly_fire: bool,
+    #[serde(default)]
+    pub bot_difficulty: BotDifficulty,
 }
 
 /// Reliable commands from a client.
@@ -68,6 +70,14 @@ pub enum Cmd {
     Ban(PlayerId),
     /// Throw a primary or secondary on the ground.
     Drop(WeaponId),
+    /// Host only.
+    AddBot,
+    /// Host only: removes the most recently added bot.
+    RemoveBot,
+    /// Host only: 2..=10, capped by the game mode.
+    SetMaxPlayers(usize),
+    /// Host only: applies to all bots immediately.
+    SetBotDifficulty(BotDifficulty),
     /// Landing damage the client measured (server clamps it).
     FallDamage(i32),
     Chat(String),

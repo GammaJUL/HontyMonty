@@ -357,3 +357,124 @@ fn banned_players_cannot_rejoin() {
     assert_eq!(again.rejected.as_deref(), Some("You are banned from this lobby"));
     b.recv();
 }
+
+#[test]
+fn bots_find_and_shoot_players() {
+    let (mut server, mut a, mut b) = setup(27290, "");
+    // Swap the second human for a bot: kick Bob, add a bot (it takes Bravo).
+    let bob = b.me().id;
+    a.cmd(Cmd::Kick(bob));
+    a.cmd(Cmd::AddBot);
+    run(&mut server, &mut [&mut a], 0.2);
+    let snap = a.snapshot.as_ref().unwrap();
+    assert!(snap.players.iter().any(|p| p.name.starts_with("BOT")));
+
+    a.cmd(Cmd::StartMatch);
+    run_fast(&mut server, &mut [&mut a], FREEZE_TIME + 0.5);
+    // Stand in plain view of the Bravo spawn.
+    a.state.pos = [20.0, 0.0, -8.0];
+    run_fast(&mut server, &mut [&mut a], 15.0);
+    assert!(a.me().deaths > 0 || a.me().health < 100, "the bot should have shot us");
+}
+
+#[test]
+fn wallbangs_depend_on_weapon_power() {
+    let mut server = GameServer::host("wb".into(), String::new(), GameMode::FreeForAll, 27300).unwrap();
+    let port = server.port;
+    let (mut a, mut b) = (TestClient::new(port), TestClient::new(port));
+    a.join("A", "");
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    server.tick(0.01);
+    b.join("B", "");
+    run(&mut server, &mut [&mut a, &mut b], 0.2);
+    a.cmd(Cmd::StartMatch);
+    run(&mut server, &mut [&mut a, &mut b], 0.3);
+    a.cmd(Cmd::Buy(ShopItem::Weapon(WeaponId::Ak47)));
+    // A 1.2 m crate sits between x = -23 and -21.8 at this depth.
+    a.state.pos = [-26.0, 0.0, -6.4];
+    b.state.pos = [-19.0, 0.0, -6.4];
+    run(&mut server, &mut [&mut a, &mut b], 0.3);
+    let shot = |weapon| Cmd::Fire {
+        weapon,
+        origin: [-26.0, 0.95, -6.4],
+        dirs: vec![[1.0, 0.0, 0.0]],
+        heavy: false,
+    };
+    a.cmd(shot(WeaponId::Glock));
+    run(&mut server, &mut [&mut a, &mut b], 0.2);
+    assert_eq!(b.me().health, 100, "a pistol can't shoot through the crate");
+    a.cmd(shot(WeaponId::Ak47));
+    run(&mut server, &mut [&mut a, &mut b], 0.2);
+    let hp = b.me().health;
+    assert!((60..100).contains(&hp), "an AK goes through with reduced damage, health {hp}");
+}
+
+#[test]
+fn ffa_players_respawn() {
+    let mut server = GameServer::host("ffa".into(), String::new(), GameMode::FreeForAll, 27310).unwrap();
+    let mut a = TestClient::new(server.port);
+    a.join("A", "");
+    run(&mut server, &mut [&mut a], 0.2);
+    a.cmd(Cmd::StartMatch);
+    run(&mut server, &mut [&mut a], 0.3);
+    let seq = a.me().spawn_seq;
+    a.cmd(Cmd::FallDamage(200));
+    run(&mut server, &mut [&mut a], 0.3);
+    assert!(!a.me().alive);
+    run_fast(&mut server, &mut [&mut a], crate::game_mode::FFA_RESPAWN_TIME + 0.5);
+    assert!(a.me().alive);
+    assert_eq!(a.me().health, 100);
+    assert!(a.me().spawn_seq > seq);
+}
+
+#[test]
+fn he_grenade_hurts_nearby_enemies() {
+    let (mut server, mut a, mut b) = setup(27320, "");
+    a.cmd(Cmd::StartMatch);
+    run(&mut server, &mut [&mut a, &mut b], 0.3);
+    a.cmd(Cmd::Buy(ShopItem::Grenade(crate::weapons::GrenadeKind::He)));
+    run_fast(&mut server, &mut [&mut a, &mut b], FREEZE_TIME + 0.5);
+    a.state.pos = [-5.0, 0.0, -8.0];
+    b.state.pos = [0.0, 0.0, -8.0];
+    run(&mut server, &mut [&mut a, &mut b], 0.1);
+    // Drop it right at Bob's feet.
+    a.cmd(Cmd::Throw {
+        kind: crate::weapons::GrenadeKind::He,
+        origin: [-0.5, 0.3, -8.0],
+        vel: [0.0, 0.0, 0.0],
+    });
+    run(&mut server, &mut [&mut a, &mut b], 2.5);
+    assert!(b.me().health < 60, "HE should hit hard up close, health {}", b.me().health);
+}
+
+/// Seconds a single bot needs to kill a player standing still in plain view (capped at `seconds`).
+fn bot_time_to_kill(port: u16, difficulty: crate::game_mode::BotDifficulty, seconds: f32) -> f32 {
+    let mut server = GameServer::host("bd".into(), String::new(), GameMode::OneVOne, port).unwrap();
+    let mut a = TestClient::new(server.port);
+    a.join("Target", "");
+    run(&mut server, &mut [&mut a], 0.2);
+    a.cmd(Cmd::SetBotDifficulty(difficulty));
+    a.cmd(Cmd::AddBot);
+    a.cmd(Cmd::StartMatch);
+    run_fast(&mut server, &mut [&mut a], FREEZE_TIME + 0.5);
+    a.state.pos = [16.0, 0.0, -8.0];
+    let mut t = 0.0;
+    while t < seconds && a.me().deaths == 0 && a.me().alive {
+        run_fast(&mut server, &mut [&mut a], 0.25);
+        t += 0.25;
+    }
+    t
+}
+
+#[test]
+fn bot_difficulty_changes_how_dangerous_bots_are() {
+    use crate::game_mode::BotDifficulty;
+    // Average a few runs; bots have some randomness.
+    let avg = |d: BotDifficulty, port: u16| (0..5).map(|k| bot_time_to_kill(port + k, d, 30.0)).sum::<f32>() / 5.0;
+    let easy = avg(BotDifficulty::Easy, 27330);
+    let normal = avg(BotDifficulty::Normal, 27350);
+    let hard = avg(BotDifficulty::Hard, 27360);
+    let expert = avg(BotDifficulty::Expert, 27340);
+    eprintln!("time to kill a standing player: easy {easy:.2}s, normal {normal:.2}s, hard {hard:.2}s, expert {expert:.2}s");
+    assert!(easy > expert * 1.5, "easy bots ({easy:.2}s) should be much slower than expert ({expert:.2}s)");
+}
