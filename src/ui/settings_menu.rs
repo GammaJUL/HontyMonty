@@ -32,7 +32,9 @@ const TABS: [(Tab, &str); 5] = [
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Field {
-    Resolution,
+    WindowSize,
+    RenderResolution,
+    Scaling,
     DisplayMode,
     VSync,
     FpsLimit,
@@ -59,7 +61,9 @@ enum Field {
 fn fields(tab: Tab) -> &'static [(Field, &'static str)] {
     match tab {
         Tab::Video => &[
-            (Field::Resolution, "Resolution"),
+            (Field::RenderResolution, "Resolution (in game)"),
+            (Field::Scaling, "Aspect Ratio Scaling"),
+            (Field::WindowSize, "Window Size (windowed)"),
             (Field::DisplayMode, "Display Mode"),
             (Field::VSync, "VSync"),
             (Field::FpsLimit, "FPS Limit"),
@@ -360,7 +364,9 @@ fn cycle<T: Copy + PartialEq>(list: &[T], cur: T, d: i32) -> T {
 fn step_field(s: &mut Settings, field: Field, d: i32) {
     let df = d as f32;
     match field {
-        Field::Resolution => s.resolution = cycle(&RESOLUTIONS, s.resolution, d),
+        Field::WindowSize => s.window_size = cycle(&WINDOW_SIZES, s.window_size, d),
+        Field::RenderResolution => s.render_resolution = cycle(&RENDER_RESOLUTIONS, s.render_resolution, d),
+        Field::Scaling => s.stretched = !s.stretched,
         Field::DisplayMode => {
             s.display_mode = cycle(
                 &[DisplayMode::Windowed, DisplayMode::Borderless, DisplayMode::Fullscreen],
@@ -398,7 +404,13 @@ fn step_field(s: &mut Settings, field: Field, d: i32) {
 fn field_text(s: &Settings, field: Field) -> String {
     let onoff = |b: bool| if b { "On" } else { "Off" }.to_string();
     match field {
-        Field::Resolution => format!("{} x {}", s.resolution.0, s.resolution.1),
+        Field::WindowSize => format!("{} x {}", s.window_size.0, s.window_size.1),
+        Field::RenderResolution => match s.render_resolution {
+            None => "Native".into(),
+            Some((w, h)) if w * 3 == h * 4 => format!("{w} x {h} (4:3)"),
+            Some((w, h)) => format!("{w} x {h}"),
+        },
+        Field::Scaling => if s.stretched { "Stretched" } else { "Black bars" }.to_string(),
         Field::DisplayMode => s.display_mode.name().to_string(),
         Field::VSync => onoff(s.vsync),
         Field::FpsLimit => {
@@ -441,7 +453,9 @@ fn handle(
                 let d = Settings::default();
                 match ui.tab {
                     Tab::Video => {
-                        settings.resolution = d.resolution;
+                        settings.window_size = d.window_size;
+                        settings.render_resolution = d.render_resolution;
+                        settings.stretched = d.stretched;
                         settings.display_mode = d.display_mode;
                         settings.vsync = d.vsync;
                         settings.fps_limit = d.fps_limit;

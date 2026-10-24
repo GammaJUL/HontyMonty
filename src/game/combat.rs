@@ -544,7 +544,7 @@ fn scope_and_fov(
             arsenal.rescope = None;
         }
     }
-    let aspect = window.width() / window.height().max(1.0);
+    let aspect = crate::render_scale::view_aspect(&settings, &window);
     let base = horizontal_to_vertical(settings.fov, aspect);
     let target = match arsenal.zoom_fov() {
         Some(z) => horizontal_to_vertical(z, aspect),

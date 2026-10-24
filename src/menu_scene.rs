@@ -55,6 +55,7 @@ fn spawn_scene(
     commands.spawn((
         MenuSceneEntity,
         MenuCamera,
+        crate::render_scale::MainCamera,
         Camera3d::default(),
         Transform::from_xyz(1.6, 1.5, -3.8).looking_at(Vec3::new(1.0, 1.05, 0.0), Vec3::Y),
     ));

@@ -14,13 +14,28 @@ use crate::save;
 
 const FILE: &str = "settings.json";
 
-pub const RESOLUTIONS: [(u32, u32); 6] = [
+/// Window sizes offered in windowed mode.
+pub const WINDOW_SIZES: [(u32, u32); 6] = [
     (1280, 720),
     (1366, 768),
     (1600, 900),
     (1920, 1080),
     (2560, 1440),
     (3840, 2160),
+];
+
+/// In-game render resolutions (`None` = native, same as the window).
+pub const RENDER_RESOLUTIONS: [Option<(u32, u32)>; 10] = [
+    None,
+    Some((3840, 2160)),
+    Some((2560, 1440)),
+    Some((1920, 1080)),
+    Some((1600, 900)),
+    Some((1280, 720)),
+    Some((1440, 1080)),
+    Some((1280, 960)),
+    Some((1024, 768)),
+    Some((800, 600)),
 ];
 
 pub const FPS_LIMITS: [u32; 8] = [30, 60, 120, 144, 165, 240, 360, 0];
@@ -110,7 +125,13 @@ impl Default for Crosshair {
 #[serde(default)]
 pub struct Settings {
     pub player_name: String,
-    pub resolution: (u32, u32),
+    /// Window size in windowed mode (older saves called this `resolution`).
+    #[serde(alias = "resolution")]
+    pub window_size: (u32, u32),
+    /// In-game 3D render resolution; `None` renders at the window's size.
+    pub render_resolution: Option<(u32, u32)>,
+    /// Stretch a different aspect ratio (e.g. 4:3) to fill the screen instead of black bars.
+    pub stretched: bool,
     pub display_mode: DisplayMode,
     pub vsync: bool,
     /// 0 = unlimited.
@@ -138,7 +159,9 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             player_name: format!("Player{}", fastrand::u16(100..999)),
-            resolution: (1600, 900),
+            window_size: (1600, 900),
+            render_resolution: None,
+            stretched: true,
             display_mode: DisplayMode::Windowed,
             vsync: false,
             fps_limit: 144,
@@ -210,7 +233,7 @@ fn apply_window_settings(settings: Res<Settings>, mut window: Single<&mut Window
     if window.mode != mode {
         window.mode = mode;
     }
-    let (w, h) = settings.resolution;
+    let (w, h) = settings.window_size;
     if settings.display_mode == DisplayMode::Windowed
         && (window.resolution.physical_width() != w || window.resolution.physical_height() != h)
     {

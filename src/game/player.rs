@@ -91,6 +91,7 @@ fn spawn_local_player(mut commands: Commands, settings: Res<Settings>) {
         .with_children(|p| {
             p.spawn((
                 PlayerCamera,
+                crate::render_scale::MainCamera,
                 SpatialListener::new(0.3),
                 Camera3d::default(),
                 Camera {

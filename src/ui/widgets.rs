@@ -4,7 +4,10 @@ use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input::ButtonState;
 use bevy::prelude::*;
 
+use bevy::ui::{ComputedNode, FocusPolicy, UiGlobalTransform, UiStack};
+
 use crate::audio::{PlaySfx, Sound};
+use crate::render_scale::UiCursor;
 
 pub const BG_PANEL: Color = Color::srgba(0.06, 0.07, 0.09, 0.88);
 pub const BG_BUTTON: Color = Color::srgba(0.16, 0.18, 0.22, 0.95);
@@ -16,10 +19,56 @@ pub const TEXT: Color = Color::srgb(0.92, 0.93, 0.95);
 pub const TEXT_DIM: Color = Color::srgb(0.6, 0.63, 0.68);
 pub const BORDER: Color = Color::srgba(1.0, 1.0, 1.0, 0.08);
 
-/// Clickable UI node. `Interaction` is kept up to date by bevy_ui.
+/// Clickable UI node; its [`Interaction`] is kept up to date by [`update_interactions`].
 #[derive(Component, Default)]
-#[require(Node, Interaction, bevy::ui::FocusPolicy::Block)]
+#[require(Node, Interaction, FocusPolicy::Block)]
 pub struct UiButton;
+
+/// Hover/press state of a [`UiButton`]. Computed here instead of by bevy_ui so it also
+/// works when the UI is rendered into the low-resolution texture (see `render_scale`).
+#[derive(Component, Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Interaction {
+    #[default]
+    None,
+    Hovered,
+    Pressed,
+}
+
+/// Finds the topmost button under the cursor, like bevy_ui's focus system.
+fn update_interactions(
+    cursor: Res<UiCursor>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    stack: Res<UiStack>,
+    nodes: Query<(&ComputedNode, &UiGlobalTransform, &InheritedVisibility, Option<&FocusPolicy>, Has<UiButton>)>,
+    mut buttons: Query<(Entity, &mut Interaction)>,
+) {
+    let mut hovered = None;
+    if let Some(point) = cursor.0 {
+        for &e in stack.uinodes.iter().rev() {
+            let Ok((node, transform, visible, policy, is_button)) = nodes.get(e) else { continue };
+            if !visible.get() || !node.contains_point(*transform, point) {
+                continue;
+            }
+            if is_button {
+                hovered = Some(e);
+                break;
+            }
+            if matches!(policy, Some(FocusPolicy::Block)) {
+                break;
+            }
+        }
+    }
+    for (e, mut interaction) in &mut buttons {
+        let next = if *interaction == Interaction::Pressed && mouse.pressed(MouseButton::Left) {
+            Interaction::Pressed
+        } else if Some(e) == hovered {
+            if mouse.just_pressed(MouseButton::Left) { Interaction::Pressed } else { Interaction::Hovered }
+        } else {
+            Interaction::None
+        };
+        interaction.set_if_neq(next);
+    }
+}
 
 /// Marks a button as the currently selected option (drawn highlighted).
 #[derive(Component)]
@@ -132,7 +181,6 @@ pub fn screen_root() -> Node {
     }
 }
 
-#[allow(deprecated)]
 fn style_buttons(
     mut q: Query<
         (&Interaction, &mut BackgroundColor, Has<Selected>, Has<Disabled>),
@@ -160,7 +208,6 @@ fn style_buttons(
     }
 }
 
-#[allow(deprecated)]
 fn button_sounds(q: Query<&Interaction, (Changed<Interaction>, With<UiButton>)>, mut sfx: MessageWriter<PlaySfx>) {
     for i in &q {
         match i {
@@ -179,7 +226,6 @@ fn button_sounds(q: Query<&Interaction, (Changed<Interaction>, With<UiButton>)>,
 }
 
 /// Helper used by screens: returns actions of buttons clicked this frame.
-#[allow(deprecated)]
 pub fn clicked<'a, A: Component>(
     q: &'a Query<(&Interaction, &A), (Changed<Interaction>, With<UiButton>, Without<Disabled>)>,
 ) -> impl Iterator<Item = &'a A> + 'a {
@@ -189,7 +235,6 @@ pub fn clicked<'a, A: Component>(
 }
 
 /// Query type for `clicked`.
-#[allow(deprecated)]
 pub type Clicked<'w, 's, A> =
     Query<'w, 's, (&'static Interaction, &'static A), (Changed<Interaction>, With<UiButton>, Without<Disabled>)>;
 
@@ -243,7 +288,6 @@ pub fn text_input<A: Component>(
     .id()
 }
 
-#[allow(deprecated)]
 fn focus_text_inputs(
     mouse: Res<ButtonInput<MouseButton>>,
     mut q: Query<(Entity, &Interaction, &mut TextInput)>,
@@ -332,7 +376,8 @@ pub struct WidgetsPlugin;
 
 impl Plugin for WidgetsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.add_systems(PreUpdate, update_interactions.after(bevy::input::InputSystems))
+            .add_systems(
             Update,
             (
                 style_buttons,

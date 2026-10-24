@@ -62,7 +62,7 @@ Ideas and known gaps, roughly ordered by impact. Tick items off as they land.
 - [ ] Separate music volume once there is music
 - [ ] Gamepad support
 - [x] Brightness, shadows on/off, MSAA settings
-- [ ] Migrate from the deprecated `Interaction` to `bevy::ui_widgets` (Bevy 0.20 deprecation)
+- [x] Replace the deprecated `Interaction` (own hit-testing, works with the low-res render target)
 - [ ] Loading screen + tooltips
 - [ ] Localisation
 

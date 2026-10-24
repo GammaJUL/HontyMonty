@@ -1,7 +1,3 @@
-// `Interaction`/legacy `Button` are deprecated in Bevy 0.20 but still fully functional.
-// See TODO.md: migrate to `bevy::ui_widgets`.
-#![allow(deprecated)]
-
 mod audio;
 mod cases;
 mod character;
@@ -13,6 +9,7 @@ mod map;
 mod menu_scene;
 mod net;
 mod profile;
+mod render_scale;
 mod save;
 mod settings;
 mod skin_textures;
@@ -32,7 +29,7 @@ use states::AppState;
 fn main() {
     let settings = Settings::load();
     let profile = Profile::load();
-    let (w, h) = settings.resolution;
+    let (w, h) = settings.window_size;
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -62,6 +59,7 @@ fn main() {
             menu_scene::MenuScenePlugin,
             game::GamePlugin,
             dev::DevPlugin,
+            render_scale::RenderScalePlugin,
         ))
         .init_resource::<skin_textures::SkinTextures>()
         .run();

@@ -501,6 +501,7 @@ fn update_crosshair(
     arsenal: Res<Arsenal>,
     root: Query<(Entity, &mut Visibility), With<CrosshairRoot>>,
     projections: Query<&Projection, With<super::player::PlayerCamera>>,
+    cameras: Query<&Camera, With<super::player::PlayerCamera>>,
     window: Single<&Window>,
     players: Query<&LocalPlayer>,
     mut last: Local<Option<f32>>,
@@ -523,7 +524,14 @@ fn update_crosshair(
         })
         .unwrap_or(1.2);
     let spread_px = if settings.crosshair.dynamic {
-        arsenal.spread.tan() / (fov / 2.0).tan() * window.height() / 2.0
+        // Height of the view in UI units (the window, or the low-res texture).
+        let view_height = cameras
+            .single()
+            .ok()
+            .and_then(|c| c.logical_viewport_size())
+            .map(|s| s.y)
+            .unwrap_or(window.height());
+        arsenal.spread.tan() / (fov / 2.0).tan() * view_height / 2.0
     } else {
         0.0
     };
