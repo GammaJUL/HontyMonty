@@ -3,6 +3,7 @@
 mod audio;
 mod cases;
 mod character;
+mod crash;
 mod dev;
 mod game;
 mod game_mode;
@@ -29,6 +30,7 @@ use settings::Settings;
 use states::AppState;
 
 fn main() {
+    crash::install();
     let settings = Settings::load();
     let profile = Profile::load();
     let (w, h) = settings.window_size;

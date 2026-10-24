@@ -10,6 +10,7 @@
 //! * `HONTY_DEV_SMOKE=<meters>` pops a smoke that far in front of the spawn (0 = on top of you).
 //! * `HONTY_DEV_LOOK=<facial hair>,<accessory>` (indices) previews character options without saving.
 //! * `HONTY_DEV_OPEN=1` opens one case (inventory) or the buy menu (in game).
+//! * `HONTY_DEV_CRASH=1` crashes on purpose to test the crash reporter.
 //! * `HONTY_DEV_SCREENSHOT=path.png` saves a screenshot after ~7 s and exits.
 
 use std::net::SocketAddr;
@@ -33,6 +34,10 @@ pub struct DevPlugin;
 
 impl Plugin for DevPlugin {
     fn build(&self, app: &mut App) {
+        // Lets you check the crash reporter (error box + crash.log).
+        if std::env::var("HONTY_DEV_CRASH").is_ok() {
+            panic!("HONTY_DEV_CRASH is set: this is a test crash");
+        }
         if std::env::var("HONTY_DEV_STATE").is_ok() || std::env::var("HONTY_DEV_SCREENSHOT").is_ok() {
             app.add_systems(Update, drive);
         }

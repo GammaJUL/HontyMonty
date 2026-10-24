@@ -1,5 +1,8 @@
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld.exe"
+# Link the C runtime statically so the .exe runs on PCs without the
+# Visual C++ Redistributable (vcruntime140.dll) installed.
+rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.x86_64-unknown-linux-gnu]
 rustflags = [
